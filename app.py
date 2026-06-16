@@ -589,7 +589,74 @@ def page_temporada(df: pd.DataFrame):
     fig_tir.update_xaxes(gridcolor="rgba(200,214,229,0.1)", tickfont=dict(color=BLANCO))
     chart(fig_tir)
 
-    # ── 6: Diferencia de goles y acumulado ──
+    # ── 6: Defensa — paradas vs goles encajados + faltas ──
+    section("Defensa & Portero — evolución de temporada")
+
+    par_t  = temporada["paradas"].fillna(0).astype(int).tolist()
+    tap_t  = temporada["tap"].fillna(0).astype(int).tolist()
+    ge_t   = temporada["goles_enc"].fillna(0).astype(int).tolist()
+    fal_t  = temporada["faltas"].fillna(0).astype(int).tolist()
+    sch_t  = temporada["jugadas_set"].fillna(0).astype(int).tolist()
+
+    fig_def_t = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_def_t.add_trace(go.Bar(
+        name="Paradas portero", x=rivales, y=par_t,
+        marker=dict(color=AZUL_CELESTE, line=dict(color=AZUL_OSCURO, width=1)),
+        text=par_t, textposition="outside",
+        textfont=dict(color=AZUL_CELESTE, size=11),
+    ), secondary_y=False)
+    fig_def_t.add_trace(go.Bar(
+        name="Disparos bloqueados", x=rivales, y=tap_t,
+        marker=dict(color=DORADO, opacity=0.85, line=dict(color=AZUL_OSCURO, width=1)),
+        text=tap_t, textposition="outside",
+        textfont=dict(color=DORADO, size=11),
+    ), secondary_y=False)
+    fig_def_t.add_trace(go.Scatter(
+        name="Goles encajados", x=rivales, y=ge_t,
+        mode="lines+markers+text",
+        line=dict(color=ROJO, width=2.5),
+        marker=dict(size=10, color=ROJO, line=dict(color=BLANCO, width=1.5)),
+        text=ge_t, textposition="top center",
+        textfont=dict(color=ROJO, size=11),
+    ), secondary_y=True)
+    fig_def_t.update_layout(
+        paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+        height=320, margin=dict(t=30, b=20, l=40, r=60),
+        barmode="group", bargap=0.25,
+        font=dict(family="Inter, Arial, sans-serif", color=BLANCO),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=BLANCO),
+                    orientation="h", y=1.1),
+    )
+    fig_def_t.update_yaxes(title_text="Paradas / TAP", secondary_y=False,
+                            gridcolor="rgba(200,214,229,0.07)",
+                            tickfont=dict(color=BLANCO))
+    fig_def_t.update_yaxes(title_text="Goles encajados", secondary_y=True,
+                            gridcolor="rgba(0,0,0,0)",
+                            tickfont=dict(color=ROJO), color=ROJO)
+    fig_def_t.update_xaxes(gridcolor="rgba(200,214,229,0.07)",
+                             tickfont=dict(color=BLANCO))
+    chart(fig_def_t)
+
+    # Jugadas ensayadas + faltas por partido
+    section("Jugadas ensayadas y faltas — evolución de temporada")
+    fig_je = go.Figure()
+    fig_je.add_trace(go.Bar(
+        name="Saques de esquina", x=rivales, y=sch_t,
+        marker=dict(color=AZUL_CELESTE, line=dict(color=AZUL_OSCURO, width=1)),
+        text=sch_t, textposition="outside",
+        textfont=dict(color=AZUL_CELESTE, size=11),
+    ))
+    fig_je.add_trace(go.Bar(
+        name="Faltas cometidas", x=rivales, y=fal_t,
+        marker=dict(color=ROJO, opacity=0.8, line=dict(color=AZUL_OSCURO, width=1)),
+        text=fal_t, textposition="outside",
+        textfont=dict(color=ROJO, size=11),
+    ))
+    t(fig_je, height=280, barmode="group", bargap=0.3,
+      margin=dict(t=20, b=20, l=30, r=20))
+    chart(fig_je)
+
+    # ── 7: Diferencia de goles y acumulado ──
     section("Diferencia de goles y acumulado de temporada")
     chart(_timeline_chart(temporada))
 
@@ -1095,6 +1162,100 @@ def page_partido(df: pd.DataFrame):
             <span style="color:{GRIS_MEDIO};font-size:0.9rem;">{label}</span>
             <span style="color:{color};font-size:1.1rem;font-weight:700;">{valor}</span>
         </div>""", unsafe_allow_html=True)
+
+    # ── Defensa & Portero ──
+    section("Defensa & Portero")
+
+    paradas   = int(temp_row.get("paradas") or 0)
+    tap       = int(temp_row.get("tap")     or 0)
+    ge        = int(temp_row.get("goles_enc") or 0)
+    pa0       = int(temp_row.get("pa0")     or 0)
+
+    # Tarjetas resumen defensivas
+    d_cols = st.columns(4)
+    for col, (lbl, val, suf, col_val) in zip(d_cols, [
+        ("Paradas portero",     paradas, "",  AZUL_CELESTE),
+        ("Disparos bloqueados", tap,     "",  DORADO),
+        ("Goles encajados",     ge,      "",  ROJO),
+        ("Portería a cero",     "✅" if pa0 else "❌", "", VERDE if pa0 else ROJO),
+    ]):
+        col.markdown(f"""
+        <div style="background:{AZUL_MEDIO};border-radius:10px;padding:14px 16px;
+                    border-top:3px solid {col_val};text-align:center;margin-bottom:8px;">
+            <div style="color:{GRIS_MEDIO};font-size:0.68rem;text-transform:uppercase;
+                        letter-spacing:0.08em;margin-bottom:6px;">{lbl}</div>
+            <div style="color:{col_val};font-size:1.8rem;font-weight:800;">{val}</div>
+        </div>""", unsafe_allow_html=True)
+
+    # Paradas + TAP por tramo
+    tramos_def = tramos.copy()
+    par_vals = tramos_def["paradas"].fillna(0).tolist()
+    tap_vals = tramos_def["tap"].fillna(0).tolist()
+    tr_labels = tramos_def["tramo_raw"].tolist()
+
+    if any(v > 0 for v in par_vals + tap_vals):
+        fig_def = go.Figure()
+        fig_def.add_trace(go.Bar(
+            name="Paradas portero", x=tr_labels, y=par_vals,
+            marker=dict(color=AZUL_CELESTE, line=dict(color=AZUL_OSCURO, width=1)),
+            text=[str(int(v)) if v > 0 else "" for v in par_vals],
+            textposition="outside", textfont=dict(color=AZUL_CELESTE, size=11),
+        ))
+        fig_def.add_trace(go.Bar(
+            name="Disparos bloqueados (TAP)", x=tr_labels, y=tap_vals,
+            marker=dict(color=DORADO, opacity=0.85, line=dict(color=AZUL_OSCURO, width=1)),
+            text=[str(int(v)) if v > 0 else "" for v in tap_vals],
+            textposition="outside", textfont=dict(color=DORADO, size=11),
+        ))
+        # Separador descanso
+        if "45+" in tr_labels and "46-60" in tr_labels:
+            fig_def.add_vline(
+                x=tr_labels.index("45+") + 0.5,
+                line_color="rgba(255,255,255,0.2)", line_width=1.5, line_dash="dash",
+            )
+        t(fig_def, height=280, barmode="group", bargap=0.25,
+          margin=dict(t=20, b=20, l=30, r=20))
+        chart(fig_def)
+
+    # ── Jugadas ensayadas ──
+    section("Jugadas ensayadas")
+
+    corners = int(temp_row.get("jugadas_set") or 0)
+    faltas  = int(temp_row.get("faltas")       or 0)
+    penaltis = int(temp_row.get("pl")          or 0)
+    centros_val = int(temp_row.get("centros")  or 0)
+
+    je_cols = st.columns(4)
+    for col, (lbl, val, color) in zip(je_cols, [
+        ("Saques de esquina", corners,     AZUL_CELESTE),
+        ("Faltas cometidas",  faltas,      ROJO),
+        ("Penaltis",          penaltis,    DORADO),
+        ("Centros",           centros_val, GRIS_MEDIO),
+    ]):
+        col.markdown(f"""
+        <div style="background:{AZUL_MEDIO};border-radius:10px;padding:14px 16px;
+                    border-left:4px solid {color};text-align:center;margin-bottom:8px;">
+            <div style="color:{GRIS_MEDIO};font-size:0.68rem;text-transform:uppercase;
+                        letter-spacing:0.08em;margin-bottom:6px;">{lbl}</div>
+            <div style="color:{color};font-size:1.8rem;font-weight:800;">{val}</div>
+        </div>""", unsafe_allow_html=True)
+
+    # Faltas por tramo
+    faltas_tramo = tramos["faltas"].fillna(0).tolist()
+    if any(v > 0 for v in faltas_tramo):
+        fig_fal = go.Figure()
+        fig_fal.add_trace(go.Bar(
+            name="Faltas", x=tr_labels, y=faltas_tramo,
+            marker=dict(color=ROJO, opacity=0.8, line=dict(color=AZUL_OSCURO, width=1)),
+            text=[str(int(v)) if v > 0 else "" for v in faltas_tramo],
+            textposition="outside", textfont=dict(color=ROJO, size=11),
+        ))
+        fig_fal.add_hline(y=sum(faltas_tramo)/len([v for v in faltas_tramo if v > 0] or [1]),
+                          line_dash="dot", line_color="rgba(255,255,255,0.3)",
+                          annotation_text="Media", annotation_position="right",
+                          annotation_font=dict(color=GRIS_MEDIO, size=9))
+        t(fig_fal, height=240, margin=dict(t=20, b=20, l=30, r=50))
+        chart(fig_fal)
 
 
 # ── Página: Rivales ───────────────────────────────────────────────────────────
