@@ -1026,6 +1026,75 @@ def page_partido(df: pd.DataFrame):
         st.plotly_chart(fig_cp, use_container_width=True,
                         config={"displayModeBar": False})
 
+    # ── Cadenas de pase ──
+    section("Cadenas de pase")
+
+    c_total = int(temp_row.get("cadenas_total") or 0)
+    c_3_5   = int(temp_row.get("cadenas_3_5")   or 0)
+    c_6mas  = int(temp_row.get("cadenas_6mas")   or 0)
+    c_prom  = temp_row.get("cadenas_prom") or 0
+    c_max   = int(temp_row.get("cadena_max")     or 0)
+
+    # ── Gráfico de barras cadenas ──
+    fig_cad = go.Figure()
+
+    categorias = ["3-5 pases", "6+ pases"]
+    valores    = [c_3_5, c_6mas]
+    colores    = [AZUL_CELESTE, DORADO]
+
+    fig_cad.add_trace(go.Bar(
+        x=categorias, y=valores,
+        marker=dict(
+            color=colores,
+            line=dict(color=AZUL_OSCURO, width=1),
+        ),
+        text=valores,
+        textposition="outside",
+        textfont=dict(color=BLANCO, size=14, family="Inter"),
+        width=0.45,
+        showlegend=False,
+    ))
+
+    # Línea de promedio
+    if c_prom:
+        # Mapear el promedio al eje X según en qué categoría cae
+        fig_cad.add_hline(
+            y=c_total / 2 if c_total else 0,
+            line_color="rgba(255,255,255,0.0)",  # invisible, solo para referencia
+        )
+        # Anotación del promedio encima del gráfico
+        fig_cad.add_annotation(
+            x=0.5, y=1.08, xref="paper", yref="paper",
+            text=f"Promedio cadena: <b>{c_prom:.1f} pases</b>   |   Cadena más larga: <b>{c_max} pases</b>",
+            showarrow=False,
+            font=dict(color=GRIS_MEDIO, size=11, family="Inter"),
+            align="center",
+        )
+
+    t(fig_cad, height=300, margin=dict(t=50, b=20, l=40, r=20),
+      yaxis=dict(title="Nº cadenas", gridcolor="rgba(200,214,229,0.07)",
+                 tickfont=dict(color=GRIS_MEDIO)))
+    chart(fig_cad)
+
+    # ── Desglose en tarjetas ──
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    items = [
+        ("Cadenas de pase totales", c_total,          AZUL_CELESTE),
+        ("3 a 5 pases",             c_3_5,            AZUL_CELESTE),
+        ("6 o más pases",           c_6mas,           DORADO),
+        ("Promedio de cadena",       f"{c_prom:.1f}",  BLANCO),
+        ("Cadena más larga",         c_max,            VERDE),
+    ]
+
+    for label, valor, color in items:
+        st.markdown(f"""
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:11px 20px;border-bottom:1px solid rgba(200,214,229,0.1);
+                    background:rgba(46,75,122,0.3);border-radius:6px;margin-bottom:3px;">
+            <span style="color:{GRIS_MEDIO};font-size:0.9rem;">{label}</span>
+            <span style="color:{color};font-size:1.1rem;font-weight:700;">{valor}</span>
+        </div>""", unsafe_allow_html=True)
 
 
 # ── Página: Rivales ───────────────────────────────────────────────────────────
