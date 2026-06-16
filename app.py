@@ -647,6 +647,117 @@ def page_partido(df: pd.DataFrame):
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Match Momentum ──
+    section("Match Momentum — Posesión por tramo")
+
+    tramos_mm   = tramos.dropna(subset=["pct_posesion"])
+    tramo_labels_mm = tramos_mm["tramo_raw"].tolist()
+    pos_vals_mm = tramos_mm["pct_posesion"].tolist()
+    goles_mm    = tramos_mm["goles"].tolist()
+
+    # Valor CAdF: pos - 50 (>0 domina CAdF, <0 domina rival)
+    diff_vals   = [p - 50 for p in pos_vals_mm]
+    colors_mm   = [AZUL_CELESTE if d >= 0 else GRIS_MEDIO for d in diff_vals]
+
+    fig_mm = go.Figure()
+
+    # Zona de fondo: arriba CAdF, abajo rival
+    fig_mm.add_hrect(y0=0,   y1=50,  fillcolor="rgba(106,175,230,0.05)", line_width=0)
+    fig_mm.add_hrect(y0=-50, y1=0,   fillcolor="rgba(200,214,229,0.04)", line_width=0)
+    fig_mm.add_hline(y=0, line_color="rgba(255,255,255,0.35)", line_width=1.5)
+
+    # Barras CAdF (arriba) — usando Bar trace real
+    fig_mm.add_trace(go.Bar(
+        x=tramo_labels_mm,
+        y=[max(d, 0) for d in diff_vals],
+        marker=dict(
+            color=[AZUL_CELESTE if d >= 0 else "rgba(0,0,0,0)" for d in diff_vals],
+            line=dict(width=0),
+        ),
+        base=0,
+        showlegend=False,
+        hovertemplate="%{x}<br>CAdF: %{customdata:.0f}%<extra></extra>",
+        customdata=pos_vals_mm,
+    ))
+    # Barras rival (abajo) — invertidas
+    fig_mm.add_trace(go.Bar(
+        x=tramo_labels_mm,
+        y=[min(d, 0) for d in diff_vals],
+        marker=dict(
+            color=[GRIS_MEDIO if d < 0 else "rgba(0,0,0,0)" for d in diff_vals],
+            opacity=0.7,
+            line=dict(width=0),
+        ),
+        base=0,
+        showlegend=False,
+        hovertemplate="%{x}<br>Rival: %{customdata:.0f}%<extra></extra>",
+        customdata=[100 - p for p in pos_vals_mm],
+    ))
+
+    # Etiquetas % posesión CAdF
+    for lbl, d, pos in zip(tramo_labels_mm, diff_vals, pos_vals_mm):
+        yshift = 8 if d >= 0 else -8
+        yanchor = "bottom" if d >= 0 else "top"
+        fig_mm.add_annotation(
+            x=lbl, y=max(d, 0) if d >= 0 else min(d, 0),
+            text=f"<b>{pos:.0f}%</b>",
+            showarrow=False, yshift=yshift,
+            yanchor=yanchor,
+            font=dict(color=AZUL_CELESTE if d >= 0 else GRIS_MEDIO,
+                      size=10, family="Inter"),
+        )
+
+    # ⚽ goles
+    for lbl, d, g in zip(tramo_labels_mm, diff_vals, goles_mm):
+        if pd.notna(g) and g > 0:
+            for k in range(int(g)):
+                fig_mm.add_annotation(
+                    x=lbl, y=max(d, 0) + 10 + k * 10,
+                    text="⚽", showarrow=False, font=dict(size=15),
+                )
+
+    # Separador descanso
+    if "45+" in tramo_labels_mm and "46-60" in tramo_labels_mm:
+        fig_mm.add_vline(
+            x=tramo_labels_mm.index("45+") + 0.5,
+            line_color="rgba(255,255,255,0.25)", line_width=1.5, line_dash="dash",
+        )
+        fig_mm.add_annotation(
+            x=tramo_labels_mm.index("45+") + 0.5, y=48,
+            text="D", showarrow=False,
+            font=dict(color=GRIS_MEDIO, size=10, family="Inter"),
+        )
+
+    # Etiquetas CAdF / Rival
+    fig_mm.add_annotation(x=tramo_labels_mm[0], y=48, text=f"<b>CAdF</b>",
+                          showarrow=False, xanchor="left",
+                          font=dict(color=AZUL_CELESTE, size=11, family="Inter"))
+    fig_mm.add_annotation(x=tramo_labels_mm[0], y=-48, text=f"<b>{rival_sel}</b>",
+                          showarrow=False, xanchor="left",
+                          font=dict(color=GRIS_MEDIO, size=11, family="Inter"))
+
+    fig_mm.update_layout(
+        paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+        height=320, margin=dict(t=20, b=30, l=60, r=20),
+        font=dict(family="Inter, Arial, sans-serif", color=BLANCO),
+        barmode="overlay", bargap=0.25,
+        showlegend=False,
+        xaxis=dict(showgrid=False, zeroline=False,
+                   tickfont=dict(color=GRIS_MEDIO, size=11)),
+        yaxis=dict(
+            range=[-55, 60],
+            tickvals=[-50, -25, 0, 25, 50],
+            ticktext=["100%", "75%", "50%", "75%", "100%"],
+            showgrid=False, zeroline=False,
+            tickfont=dict(color=GRIS_MEDIO, size=10),
+        ),
+        shapes=[dict(type="rect", xref="paper", yref="paper",
+                     x0=0, y0=0, x1=1, y1=1,
+                     line=dict(color="rgba(106,175,230,0.12)", width=1),
+                     fillcolor="rgba(0,0,0,0)", layer="above")],
+    )
+    chart(fig_mm)
+
     # ── Línea de vida del partido ──
     section("Línea de vida — control del partido por tramo")
 
@@ -745,88 +856,176 @@ def page_partido(df: pd.DataFrame):
     chart(fig_m)
 
     # ── Campograma de pases por tercio ──
-    section("Mapa de pases por tercio del campo")
+    section("Pases por tercio del campo")
 
     tercios_data = [
-        ("Zona defensiva\n(1er tercio)",  "def_intentados",  "def_completados",  "pct_pases_def"),
-        ("Zona media\n(mitad campo)",      "mid_intentados",  "mid_completados",  "pct_pases_mid"),
-        ("Zona de ataque\n(último tercio)","atq_intentados",  "atq_completados",  "pct_pases_atq"),
+        ("DEF", "def_intentados", "def_completados", "pct_pases_def"),
+        ("MED", "mid_intentados", "mid_completados", "pct_pases_mid"),
+        ("ATQ", "atq_intentados", "atq_completados", "pct_pases_atq"),
     ]
 
-    fig_pitch = go.Figure()
-
-    # Fondo del campo (verde oscuro)
-    pitch_w, pitch_h = 105, 68
-    fig_pitch.add_shape(type="rect", x0=0, y0=0, x1=pitch_w, y1=pitch_h,
-                        fillcolor="#2D5A1B", line=dict(color="white", width=2))
-    # Línea central
-    fig_pitch.add_shape(type="line", x0=pitch_w/2, y0=0, x1=pitch_w/2, y1=pitch_h,
-                        line=dict(color="white", width=1.5, dash="dot"))
-    # Círculo central
-    fig_pitch.add_shape(type="circle",
-                        x0=pitch_w/2-9.15, y0=pitch_h/2-9.15,
-                        x1=pitch_w/2+9.15, y1=pitch_h/2+9.15,
-                        line=dict(color="white", width=1.5))
-    # Áreas
-    for x0, x1 in [(0, 16.5), (pitch_w-16.5, pitch_w)]:
-        fig_pitch.add_shape(type="rect", x0=x0, y0=pitch_h/2-20.16,
-                            x1=x1, y1=pitch_h/2+20.16,
-                            fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=1.5))
-
-    # División en 3 tercios con overlay de datos
-    zone_w = pitch_w / 3
-    zone_colors = ["rgba(232,93,117,{a})", "rgba(201,168,76,{a})", "rgba(106,175,230,{a})"]
-
-    for i, (zona, ip_col, pc_col, pct_col) in enumerate(tercios_data):
-        intentados  = int(temp_row.get(ip_col) or 0)
-        completados = int(temp_row.get(pc_col) or 0)
+    # Recoger datos
+    zonas_vals = []
+    for label, ip, pc, pct_col in tercios_data:
+        intentados  = int(temp_row.get(ip) or 0)
+        completados = int(temp_row.get(pc) or 0)
         perdidos    = intentados - completados
         pct         = temp_row.get(pct_col) or 0
+        zonas_vals.append((label, intentados, completados, perdidos, pct))
 
-        x0 = i * zone_w
-        x1 = (i + 1) * zone_w
-        cx = (x0 + x1) / 2
+    total_intentados = sum(v[1] for v in zonas_vals) or 1
 
-        # Intensidad por precisión
-        alpha = 0.15 + (pct / 100) * 0.35
-        color = zone_colors[i].format(a=round(alpha, 2))
-        fig_pitch.add_shape(type="rect", x0=x0+1, y0=1, x1=x1-1, y1=pitch_h-1,
-                            fillcolor=color, line=dict(color="rgba(255,255,255,0.15)", width=1))
+    # ── Campograma + Barras: un único figura con subplots compartiendo eje X ──
+    _, col_main, _ = st.columns([1, 7, 1])
+    with col_main:
+        pitch_w, pitch_h = 105, 68
+        zone_w  = pitch_w / 3
+        max_int = max(v[1] for v in zonas_vals) or 1
 
-        # Indicador de % (círculo central de zona)
-        pct_color = VERDE if pct >= 80 else (DORADO if pct >= 70 else ROJO)
-        r = 9
-        fig_pitch.add_shape(type="circle",
-                            x0=cx-r, y0=pitch_h/2-r, x1=cx+r, y1=pitch_h/2+r,
-                            fillcolor=AZUL_OSCURO,
-                            line=dict(color=pct_color, width=2.5))
-        fig_pitch.add_annotation(x=cx, y=pitch_h/2, text=f"<b>{pct:.0f}%</b>",
-                                  showarrow=False, font=dict(color=pct_color, size=14, family="Inter"))
+        # Centros de cada zona en coordenadas del campo
+        zone_cx = [zone_w/2, zone_w + zone_w/2, 2*zone_w + zone_w/2]  # 17.5, 52.5, 87.5
 
-        # Datos arriba de la zona
-        zona_label = zona.replace("\n", "<br>")
-        fig_pitch.add_annotation(x=cx, y=pitch_h - 5,
-                                  text=f"<b>{zona_label}</b>",
-                                  showarrow=False,
-                                  font=dict(color="white", size=9, family="Inter"),
-                                  align="center")
-        # Datos abajo
-        fig_pitch.add_annotation(
-            x=cx, y=8,
-            text=f"✅ {completados}   ❌ {perdidos}",
-            showarrow=False, font=dict(color=BLANCO, size=11, family="Inter"),
+        fig_cp = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.62, 0.38],
+            vertical_spacing=0.03,
+            shared_xaxes=True,
         )
 
-    fig_pitch.update_layout(
-        paper_bgcolor=AZUL_OSCURO, plot_bgcolor=AZUL_OSCURO,
-        height=380, margin=dict(t=10, b=10, l=10, r=10),
-        xaxis=dict(range=[0, pitch_w], showgrid=False, zeroline=False,
-                   showticklabels=False, scaleanchor="y", scaleratio=1),
-        yaxis=dict(range=[0, pitch_h], showgrid=False, zeroline=False,
-                   showticklabels=False),
-        showlegend=False,
-    )
-    chart(fig_pitch)
+        # ── Shapes del campo: layer="below" para que las burbujas queden encima ──
+        def ps(shape_dict):
+            """Añade layer=below a un shape del campo."""
+            shape_dict["layer"] = "below"
+            shape_dict.setdefault("xref", "x")
+            shape_dict.setdefault("yref", "y")
+            return shape_dict
+
+        pitch_shapes = []
+        # Césped
+        for i in range(6):
+            pitch_shapes.append(ps(dict(type="rect",
+                x0=i*(pitch_w/6), y0=0, x1=(i+1)*(pitch_w/6), y1=pitch_h,
+                fillcolor="#1E3D14" if i%2==0 else "#243D18",
+                line=dict(width=0))))
+        # Borde
+        pitch_shapes.append(ps(dict(type="rect", x0=0, y0=0, x1=pitch_w, y1=pitch_h,
+            fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=2))))
+        # Línea central
+        pitch_shapes.append(ps(dict(type="line", x0=pitch_w/2, y0=0,
+            x1=pitch_w/2, y1=pitch_h, line=dict(color="white", width=1.5))))
+        # Círculo central
+        pitch_shapes.append(ps(dict(type="circle",
+            x0=pitch_w/2-9.15, y0=pitch_h/2-9.15,
+            x1=pitch_w/2+9.15, y1=pitch_h/2+9.15,
+            fillcolor="rgba(0,0,0,0)", line=dict(color="white", width=1.5))))
+        # Áreas
+        for ax0, ax1 in [(0, 16.5), (pitch_w-16.5, pitch_w)]:
+            pitch_shapes.append(ps(dict(type="rect", x0=ax0, y0=pitch_h/2-20.16,
+                x1=ax1, y1=pitch_h/2+20.16, fillcolor="rgba(0,0,0,0)",
+                line=dict(color="white", width=1.5))))
+            px0 = ax0 if ax0==0 else pitch_w-5.5
+            px1 = 5.5 if ax0==0 else pitch_w
+            pitch_shapes.append(ps(dict(type="rect", x0=px0, y0=pitch_h/2-9.16,
+                x1=px1, y1=pitch_h/2+9.16, fillcolor="rgba(0,0,0,0)",
+                line=dict(color="white", width=1))))
+        # Divisores de tercio
+        for xi in [zone_w, 2*zone_w]:
+            pitch_shapes.append(ps(dict(type="line", x0=xi, y0=0, x1=xi, y1=pitch_h,
+                line=dict(color="rgba(255,255,255,0.35)", width=1.5, dash="dash"))))
+
+        # ── Row 1: burbujas (trace, siempre encima de shapes) ──
+        bubble_sizes, bubble_texts = [], []
+        for i, (label, intentados, completados, perdidos, pct) in enumerate(zonas_vals):
+            pct_total = intentados / total_intentados * 100
+            size_px = 55 + int((intentados / max_int) * 85)
+            bubble_sizes.append(size_px)
+            bubble_texts.append(str(intentados))
+            # % total arriba del campo
+            fig_cp.add_annotation(x=zone_cx[i], y=pitch_h+5,
+                text=f"<b>{pct_total:.0f}%</b>", showarrow=False,
+                font=dict(color=AZUL_CELESTE, size=12, family="Inter"),
+                xref="x", yref="y")
+
+        fig_cp.add_trace(go.Scatter(
+            x=zone_cx, y=[pitch_h/2]*3,
+            mode="markers+text",
+            marker=dict(size=bubble_sizes, sizemode="diameter",
+                        color="rgba(15,25,50,0.88)",
+                        line=dict(color=AZUL_CELESTE, width=2.5)),
+            text=bubble_texts,
+            textposition="middle center",
+            textfont=dict(color=BLANCO, size=20, family="Inter", weight=700),
+            showlegend=False, hoverinfo="skip",
+        ), row=1, col=1)
+
+        # Flecha dirección ataque
+        fig_cp.add_annotation(x=10, y=6, ax=2, ay=6,
+            xref="x", yref="y", axref="x", ayref="y",
+            text="", showarrow=True, arrowhead=2, arrowsize=1.2,
+            arrowwidth=2, arrowcolor="rgba(255,255,255,0.4)")
+
+        # ── Row 2: barras apiladas ──
+        completados_vals = [v[2] for v in zonas_vals]
+        perdidos_vals    = [v[3] for v in zonas_vals]
+        pct_vals         = [v[4] for v in zonas_vals]
+        max_bar = max(c+p for c, p in zip(completados_vals, perdidos_vals)) or 1
+
+        fig_cp.add_trace(go.Bar(
+            name="Pases completados", x=zone_cx, y=completados_vals,
+            marker=dict(color=AZUL_CELESTE, line=dict(color=AZUL_OSCURO, width=1)),
+            text=completados_vals, textposition="inside",
+            textfont=dict(color=BLANCO, size=13, family="Inter"),
+            insidetextanchor="middle", width=22,
+        ), row=2, col=1)
+        fig_cp.add_trace(go.Bar(
+            name="Pases perdidos", x=zone_cx, y=perdidos_vals,
+            marker=dict(color=GRIS_MEDIO, opacity=0.55,
+                        line=dict(color=AZUL_OSCURO, width=1)),
+            text=perdidos_vals, textposition="inside",
+            textfont=dict(color=AZUL_OSCURO, size=12, family="Inter"),
+            insidetextanchor="middle", width=22,
+        ), row=2, col=1)
+
+        # % bajo las barras y etiquetas DEF/MED/ATQ
+        for i, (label, pct) in enumerate(zip(["DEF","MED","ATQ"], pct_vals)):
+            pct_color = VERDE if pct >= 80 else (DORADO if pct >= 70 else ROJO)
+            fig_cp.add_annotation(x=zone_cx[i], y=-max_bar*0.12,
+                text=f"<b>{pct:.0f}%</b>", showarrow=False,
+                font=dict(color=pct_color, size=13, family="Inter"),
+                xref="x2", yref="y2")
+            fig_cp.add_annotation(x=zone_cx[i], y=-max_bar*0.28,
+                text=f"<b>{label}</b>", showarrow=False,
+                font=dict(color=GRIS_MEDIO, size=11, family="Inter"),
+                xref="x2", yref="y2")
+
+        # ── Layout global ──
+        fig_cp.update_layout(
+            paper_bgcolor=PAPER_BG,
+            height=540,
+            margin=dict(t=30, b=50, l=10, r=10),
+            font=dict(family="Inter, Arial, sans-serif", color=BLANCO),
+            barmode="stack",
+            showlegend=True,
+            legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=BLANCO, size=11),
+                        orientation="h", y=-0.08, x=0.25),
+            shapes=pitch_shapes,
+            # Eje X compartido (coordenadas del campo 0-105)
+            xaxis=dict(range=[-3, pitch_w+3], showgrid=False, zeroline=False,
+                       showticklabels=False, fixedrange=True),
+            xaxis2=dict(range=[-3, pitch_w+3], showgrid=False, zeroline=False,
+                        showticklabels=False, fixedrange=True),
+            # Eje Y fila 1: campo
+            yaxis=dict(range=[-5, pitch_h+12], showgrid=False, zeroline=False,
+                       showticklabels=False, fixedrange=True),
+            # Eje Y fila 2: barras
+            yaxis2=dict(range=[-max_bar*0.35, max_bar*1.15],
+                        showgrid=False, zeroline=False,
+                        showticklabels=False, fixedrange=True),
+            plot_bgcolor=PAPER_BG,
+        )
+        st.plotly_chart(fig_cp, use_container_width=True,
+                        config={"displayModeBar": False})
+
 
 
 # ── Página: Rivales ───────────────────────────────────────────────────────────
