@@ -1358,7 +1358,7 @@ def load_gps() -> pd.DataFrame:
     if not os.path.isdir(gps_dir):
         return pd.DataFrame()
     for fname in sorted(os.listdir(gps_dir)):
-        if not fname.endswith(".xlsx"):
+        if not fname.endswith(".xlsx") or fname.startswith("~$"):
             continue
         wb = openpyxl.load_workbook(os.path.join(gps_dir, fname), data_only=True, read_only=True)
         if "_synced_data" not in wb.sheetnames:
