@@ -1439,9 +1439,10 @@ def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
         textposition="outside", textfont=dict(color=BLANCO, size=11),
     ))
     media = df_evo[metrica_col].mean()
-    fig.add_hline(y=media, line_dash="dot", line_color=DORADO, opacity=0.7,
-                  annotation_text=f"Media {_fmt(media, metrica_col)}",
-                  annotation_font_color=DORADO, annotation_position="top right")
+    fig.add_hline(y=media, line_dash="dash", line_color=DORADO, line_width=2,
+                  annotation_text=f"  Media: {_fmt(media, metrica_col)}",
+                  annotation_font_color=DORADO, annotation_font_size=13,
+                  annotation_position="top left")
     t(fig, height=360)
     fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
     chart(fig)
