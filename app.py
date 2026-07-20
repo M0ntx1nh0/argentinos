@@ -1443,19 +1443,30 @@ def page_fisica():
 
     # ── Sección 1: KPIs del equipo (última sesión seleccionada) ──────────────
     section("Resumen del equipo — sesión seleccionada")
+    METRICAS_INFO = {
+        "distancia":  ("Distancia media",    " km",    "Kilómetros recorridos por jugador durante la sesión."),
+        "vel_max":    ("Vel. máx. equipo",   " km/h",  "Velocidad punta más alta registrada en el equipo en esta sesión."),
+        "carga":      ("Carga GPS media",    "",       "Índice de estrés físico total calculado por Titan: combina distancia, intensidad, aceleraciones y tiempo en alta intensidad."),
+        "accel_max":  ("Accel. máx. media",  " m/s²",  "Pico de aceleración promedio del equipo. Refleja la explosividad de los esfuerzos."),
+    }
+
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        val = df_sesion["distancia"].mean()
-        st.markdown(metric_card("Distancia media", f"{val:.2f}" if pd.notna(val) else "—", " km"), unsafe_allow_html=True)
-    with c2:
-        val = df_sesion["vel_max"].max()
-        st.markdown(metric_card("Vel. máx. equipo", f"{val:.1f}" if pd.notna(val) else "—", " km/h"), unsafe_allow_html=True)
-    with c3:
-        val = df_sesion["carga"].mean()
-        st.markdown(metric_card("Carga GPS media", f"{val:.1f}" if pd.notna(val) else "—"), unsafe_allow_html=True)
-    with c4:
-        val = df_sesion["accel_max"].mean()
-        st.markdown(metric_card("Accel. máx. media", f"{val:.2f}" if pd.notna(val) else "—"), unsafe_allow_html=True)
+    for col_ui, (col_key, agg) in zip([c1, c2, c3, c4],
+                                       [("distancia", "mean"), ("vel_max", "max"),
+                                        ("carga", "mean"), ("accel_max", "mean")]):
+        label, suffix, tooltip = METRICAS_INFO[col_key]
+        val = df_sesion[col_key].agg(agg) if col_key in df_sesion else None
+        val_str = f"{val:.2f}" if pd.notna(val) and suffix == " km" else \
+                  f"{val:.1f}" if pd.notna(val) and suffix == " km/h" else \
+                  f"{val:.1f}" if pd.notna(val) and suffix == "" else \
+                  f"{val:.2f}" if pd.notna(val) else "—"
+        with col_ui:
+            st.markdown(metric_card(label, val_str, suffix), unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-size:0.72rem;color:{GRIS_MEDIO};margin-top:4px;"
+                f"line-height:1.4;padding:0 4px;'>{tooltip}</div>",
+                unsafe_allow_html=True,
+            )
 
     # ── Sección 2: Evolución por sesión ──────────────────────────────────────
     section(f"Evolución — {metrica_label}")
