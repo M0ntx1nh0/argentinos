@@ -124,6 +124,7 @@ NAV_ITEMS = [
     ("📋", "Temporada"),
     ("🎮", "Partido"),
     ("⚔️", "Rivales"),
+    ("💪", "Física"),
 ]
 
 def render_sidebar():
@@ -1348,6 +1349,186 @@ def page_rivales(df: pd.DataFrame):
     </div>""", unsafe_allow_html=True)
 
 
+# ── GPS loader ───────────────────────────────────────────────────────────────
+def load_gps() -> pd.DataFrame:
+    """Carga todos los Training Report .xlsx de data/GPS/ y devuelve _synced_data."""
+    import openpyxl
+    gps_dir = os.path.join(os.path.dirname(__file__), "data", "GPS")
+    frames = []
+    if not os.path.isdir(gps_dir):
+        return pd.DataFrame()
+    for fname in sorted(os.listdir(gps_dir)):
+        if not fname.endswith(".xlsx"):
+            continue
+        wb = openpyxl.load_workbook(os.path.join(gps_dir, fname), data_only=True, read_only=True)
+        if "_synced_data" not in wb.sheetnames:
+            continue
+        ws = wb["_synced_data"]
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) < 2:
+            continue
+        headers = [str(h).strip() if h else "" for h in rows[0]]
+        data = [dict(zip(headers, r)) for r in rows[1:]]
+        frames.append(pd.DataFrame(data))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    df = df.rename(columns={
+        "Date": "fecha",
+        "Player Name": "jugador",
+        "Distance": "distancia",
+        "GPS Load": "carga",
+        "Top Speed": "vel_max",
+        "Peak Accel": "accel_max",
+        "Accel Zones  Count": "accel_count",
+        "Speed Zones  Distance": "hsr_dist",
+        "Speed Zones  Count": "hsr_count",
+    })
+    for col in ["distancia", "carga", "vel_max", "accel_max", "accel_count", "hsr_dist", "hsr_count"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df = df.dropna(subset=["fecha"])
+        df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
+    return df.sort_values("fecha").reset_index(drop=True)
+
+
+# ── Página: Física (GPS) ──────────────────────────────────────────────────────
+def page_fisica():
+    st.markdown(f"""
+    <h1 style="color:{BLANCO};font-size:2rem;font-weight:700;margin-bottom:2px;">
+        Preparación Física
+    </h1>
+    <p style="color:{AZUL_CELESTE};font-size:0.9rem;margin-bottom:20px;">
+        Datos GPS de entrenamiento · Titan
+    </p>""", unsafe_allow_html=True)
+
+    df = load_gps()
+
+    if df.empty:
+        st.info("No hay archivos GPS en data/GPS/. Ejecuta script.py para descargar el Training Report.")
+        return
+
+    jugadores = sorted(df["jugador"].dropna().unique())
+    fechas    = sorted(df["fecha"].unique())
+
+    # ── Filtros ───────────────────────────────────────────────────────────────
+    col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+    with col_f1:
+        jugador_sel = st.selectbox("Jugador", ["Todos"] + jugadores, key="gps_jugador")
+    with col_f2:
+        metrica_map = {
+            "Distancia (km)": "distancia",
+            "Carga GPS": "carga",
+            "Velocidad Máxima (km/h)": "vel_max",
+            "Aceleración Máxima": "accel_max",
+        }
+        metrica_label = st.selectbox("Métrica", list(metrica_map.keys()), key="gps_metrica")
+        metrica_col   = metrica_map[metrica_label]
+    with col_f3:
+        fechas_str = sorted(df["fecha_str"].unique())
+        fecha_sel  = st.selectbox("Sesión", ["Última"] + fechas_str, key="gps_fecha")
+
+    # ── Dataset filtrado ──────────────────────────────────────────────────────
+    if fecha_sel == "Última":
+        df_sesion = df[df["fecha"] == df["fecha"].max()]
+    else:
+        df_sesion = df[df["fecha_str"] == fecha_sel]
+
+    if jugador_sel != "Todos":
+        df_jugador = df[df["jugador"] == jugador_sel]
+    else:
+        df_jugador = df
+
+    # ── Sección 1: KPIs del equipo (última sesión seleccionada) ──────────────
+    section("Resumen del equipo — sesión seleccionada")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        val = df_sesion["distancia"].mean()
+        st.markdown(metric_card("Distancia media", f"{val:.2f}" if pd.notna(val) else "—", " km"), unsafe_allow_html=True)
+    with c2:
+        val = df_sesion["vel_max"].max()
+        st.markdown(metric_card("Vel. máx. equipo", f"{val:.1f}" if pd.notna(val) else "—", " km/h"), unsafe_allow_html=True)
+    with c3:
+        val = df_sesion["carga"].mean()
+        st.markdown(metric_card("Carga GPS media", f"{val:.1f}" if pd.notna(val) else "—"), unsafe_allow_html=True)
+    with c4:
+        val = df_sesion["accel_max"].mean()
+        st.markdown(metric_card("Accel. máx. media", f"{val:.2f}" if pd.notna(val) else "—"), unsafe_allow_html=True)
+
+    # ── Sección 2: Evolución por sesión ──────────────────────────────────────
+    section(f"Evolución — {metrica_label}")
+
+    df_evo = df_jugador.copy() if jugador_sel != "Todos" else df.copy()
+
+    if jugador_sel == "Todos":
+        df_evo = df_evo.groupby("fecha_str")[metrica_col].mean().reset_index()
+        df_evo = df_evo.merge(
+            df[["fecha", "fecha_str"]].drop_duplicates(), on="fecha_str"
+        ).sort_values("fecha")
+        titulo_evo = f"Media del equipo · {metrica_label}"
+    else:
+        df_evo = df_evo.sort_values("fecha")
+        titulo_evo = f"{jugador_sel} · {metrica_label}"
+
+    fig_evo = go.Figure()
+    fig_evo.add_trace(go.Bar(
+        x=df_evo["fecha_str"], y=df_evo[metrica_col],
+        name=metrica_label,
+        marker=dict(color=AZUL_CELESTE, opacity=0.85,
+                    line=dict(color=DORADO, width=1)),
+        text=[f"{v:.2f}" if pd.notna(v) else "" for v in df_evo[metrica_col]],
+        textposition="outside",
+        textfont=dict(color=BLANCO, size=11),
+    ))
+    # Línea de media
+    media = df_evo[metrica_col].mean()
+    fig_evo.add_hline(y=media, line_dash="dot",
+                      line_color=DORADO, opacity=0.7,
+                      annotation_text=f"Media {media:.2f}",
+                      annotation_font_color=DORADO,
+                      annotation_position="top right")
+    t(fig_evo, height=360)
+    fig_evo.update_layout(title=dict(text=titulo_evo, font=dict(color=GRIS_MEDIO, size=13)))
+    chart(fig_evo)
+
+    # ── Sección 3: Comparativa jugadores (sesión seleccionada) ───────────────
+    section(f"Comparativa jugadores · {metrica_label} — {fecha_sel if fecha_sel != 'Última' else 'Última sesión'}")
+
+    df_comp = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
+
+    if df_comp.empty:
+        st.info("Sin datos para esta sesión.")
+    else:
+        colores_bar = [DORADO if j == jugador_sel else AZUL_CELESTE for j in df_comp["jugador"]]
+        fig_comp = go.Figure(go.Bar(
+            x=df_comp[metrica_col], y=df_comp["jugador"],
+            orientation="h",
+            marker=dict(color=colores_bar, opacity=0.9,
+                        line=dict(color="rgba(0,0,0,0.2)", width=1)),
+            text=[f"{v:.2f}" for v in df_comp[metrica_col]],
+            textposition="outside",
+            textfont=dict(color=BLANCO, size=11),
+        ))
+        t(fig_comp, height=max(300, len(df_comp) * 36))
+        chart(fig_comp)
+
+    # ── Sección 4: Tabla completa ─────────────────────────────────────────────
+    section("Detalle por jugador y sesión")
+
+    cols_tabla = ["fecha_str", "jugador", "distancia", "vel_max", "carga", "accel_max"]
+    cols_exist  = [c for c in cols_tabla if c in df_jugador.columns]
+    df_tabla    = df_jugador[cols_exist].copy()
+    df_tabla    = df_tabla.rename(columns={
+        "fecha_str": "Fecha", "jugador": "Jugador",
+        "distancia": "Dist (km)", "vel_max": "Vel Máx",
+        "carga": "Carga GPS", "accel_max": "Accel Máx",
+    }).sort_values(["Fecha", "Jugador"])
+
+    st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+
+
 # ── CSS global ────────────────────────────────────────────────────────────────
 def inject_css():
     st.markdown(f"""
@@ -1491,6 +1672,7 @@ def main():
     elif page == "Temporada": page_temporada(df)
     elif page == "Partido":   page_partido(df)
     elif page == "Rivales":   page_rivales(df)
+    elif page == "Física":    page_fisica()
 
 
 if __name__ == "__main__":
