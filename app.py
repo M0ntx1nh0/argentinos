@@ -1395,6 +1395,57 @@ def load_gps() -> pd.DataFrame:
 
 
 # ── Página: Física (GPS) ──────────────────────────────────────────────────────
+METRICAS_INFO = {
+    "distancia": ("Distancia (km)",      " km",   "Kilómetros recorridos durante la sesión."),
+    "vel_max":   ("Vel. Máxima (km/h)",  " km/h", "Velocidad punta máxima registrada."),
+    "carga":     ("Carga GPS",           "",      "Índice de estrés físico total (distancia + intensidad + aceleraciones)."),
+    "accel_max": ("Accel. Máxima (m/s²)"," m/s²", "Pico de aceleración. Refleja explosividad del esfuerzo."),
+}
+METRICA_MAP = {
+    "Distancia (km)":       "distancia",
+    "Carga GPS":            "carga",
+    "Velocidad Máxima":     "vel_max",
+    "Aceleración Máxima":   "accel_max",
+}
+
+def _fmt(val, col):
+    if not pd.notna(val):
+        return "—"
+    return f"{val:.2f}" if col in ("distancia", "accel_max") else f"{val:.1f}"
+
+def _kpis_equipo(df_sesion):
+    c1, c2, c3, c4 = st.columns(4)
+    for col_ui, (col_key, agg) in zip(
+        [c1, c2, c3, c4],
+        [("distancia","mean"),("vel_max","max"),("carga","mean"),("accel_max","mean")]
+    ):
+        label, suffix, tooltip = METRICAS_INFO[col_key]
+        val = df_sesion[col_key].agg(agg) if col_key in df_sesion.columns else None
+        with col_ui:
+            st.markdown(metric_card(label, _fmt(val, col_key), suffix), unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-size:0.72rem;color:{GRIS_MEDIO};margin-top:4px;"
+                f"line-height:1.4;padding:0 4px;'>{tooltip}</div>",
+                unsafe_allow_html=True,
+            )
+
+def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_evo["fecha_str"], y=df_evo[metrica_col],
+        name=metrica_label,
+        marker=dict(color=AZUL_CELESTE, opacity=0.85, line=dict(color=DORADO, width=1)),
+        text=[_fmt(v, metrica_col) for v in df_evo[metrica_col]],
+        textposition="outside", textfont=dict(color=BLANCO, size=11),
+    ))
+    media = df_evo[metrica_col].mean()
+    fig.add_hline(y=media, line_dash="dot", line_color=DORADO, opacity=0.7,
+                  annotation_text=f"Media {_fmt(media, metrica_col)}",
+                  annotation_font_color=DORADO, annotation_position="top right")
+    t(fig, height=360)
+    fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
+    chart(fig)
+
 def page_fisica():
     st.markdown(f"""
     <h1 style="color:{BLANCO};font-size:2rem;font-weight:700;margin-bottom:2px;">
@@ -1405,139 +1456,122 @@ def page_fisica():
     </p>""", unsafe_allow_html=True)
 
     df = load_gps()
-
     if df.empty:
         st.info("No hay archivos GPS en data/GPS/. Ejecuta script.py para descargar el Training Report.")
         return
 
-    jugadores = sorted(df["jugador"].dropna().unique())
-    fechas    = sorted(df["fecha"].unique())
+    jugadores  = sorted(df["jugador"].dropna().unique())
+    fechas_str = sorted(df["fecha_str"].unique())
 
-    # ── Filtros ───────────────────────────────────────────────────────────────
+    # ── Filtros globales ──────────────────────────────────────────────────────
     col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
     with col_f1:
-        jugador_sel = st.selectbox("Jugador", ["Todos"] + jugadores, key="gps_jugador")
+        metrica_label = st.selectbox("Métrica", list(METRICA_MAP.keys()), key="gps_metrica")
+        metrica_col   = METRICA_MAP[metrica_label]
     with col_f2:
-        metrica_map = {
-            "Distancia (km)": "distancia",
-            "Carga GPS": "carga",
-            "Velocidad Máxima (km/h)": "vel_max",
-            "Aceleración Máxima": "accel_max",
-        }
-        metrica_label = st.selectbox("Métrica", list(metrica_map.keys()), key="gps_metrica")
-        metrica_col   = metrica_map[metrica_label]
+        fecha_sel = st.selectbox("Sesión", ["Última"] + fechas_str, key="gps_fecha")
     with col_f3:
-        fechas_str = sorted(df["fecha_str"].unique())
-        fecha_sel  = st.selectbox("Sesión", ["Última"] + fechas_str, key="gps_fecha")
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
-    # ── Dataset filtrado ──────────────────────────────────────────────────────
     if fecha_sel == "Última":
         df_sesion = df[df["fecha"] == df["fecha"].max()]
+        fecha_label = df["fecha"].max().strftime("%d/%m/%Y")
     else:
-        df_sesion = df[df["fecha_str"] == fecha_sel]
+        df_sesion   = df[df["fecha_str"] == fecha_sel]
+        fecha_label = fecha_sel
 
-    if jugador_sel != "Todos":
-        df_jugador = df[df["jugador"] == jugador_sel]
-    else:
-        df_jugador = df
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_equipo, tab_individual = st.tabs(["🏟️  Equipo", "👤  Individual"])
 
-    # ── Sección 1: KPIs del equipo (última sesión seleccionada) ──────────────
-    section("Resumen del equipo — sesión seleccionada")
-    METRICAS_INFO = {
-        "distancia":  ("Distancia media",    " km",    "Kilómetros recorridos por jugador durante la sesión."),
-        "vel_max":    ("Vel. máx. equipo",   " km/h",  "Velocidad punta más alta registrada en el equipo en esta sesión."),
-        "carga":      ("Carga GPS media",    "",       "Índice de estrés físico total calculado por Titan: combina distancia, intensidad, aceleraciones y tiempo en alta intensidad."),
-        "accel_max":  ("Accel. máx. media",  " m/s²",  "Pico de aceleración promedio del equipo. Refleja la explosividad de los esfuerzos."),
-    }
+    # ════════════════════════════════════════════════════════
+    # TAB EQUIPO
+    # ════════════════════════════════════════════════════════
+    with tab_equipo:
+        section(f"Resumen del equipo · {fecha_label}")
+        _kpis_equipo(df_sesion)
 
-    c1, c2, c3, c4 = st.columns(4)
-    for col_ui, (col_key, agg) in zip([c1, c2, c3, c4],
-                                       [("distancia", "mean"), ("vel_max", "max"),
-                                        ("carga", "mean"), ("accel_max", "mean")]):
-        label, suffix, tooltip = METRICAS_INFO[col_key]
-        val = df_sesion[col_key].agg(agg) if col_key in df_sesion else None
-        val_str = f"{val:.2f}" if pd.notna(val) and suffix == " km" else \
-                  f"{val:.1f}" if pd.notna(val) and suffix == " km/h" else \
-                  f"{val:.1f}" if pd.notna(val) and suffix == "" else \
-                  f"{val:.2f}" if pd.notna(val) else "—"
-        with col_ui:
-            st.markdown(metric_card(label, val_str, suffix), unsafe_allow_html=True)
-            st.markdown(
-                f"<div style='font-size:0.72rem;color:{GRIS_MEDIO};margin-top:4px;"
-                f"line-height:1.4;padding:0 4px;'>{tooltip}</div>",
-                unsafe_allow_html=True,
-            )
+        st.markdown("<br>", unsafe_allow_html=True)
+        section(f"Evolución del equipo · {metrica_label}")
+        df_evo_eq = (
+            df.groupby(["fecha_str", "fecha"])[metrica_col]
+            .mean().reset_index().sort_values("fecha")
+        )
+        _evo_chart(df_evo_eq, metrica_col, metrica_label, f"Media del equipo · {metrica_label}")
 
-    # ── Sección 2: Evolución por sesión ──────────────────────────────────────
-    section(f"Evolución — {metrica_label}")
+        section(f"Comparativa jugadores · {metrica_label} — {fecha_label}")
+        df_comp = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
+        if df_comp.empty:
+            st.info("Sin datos para esta sesión.")
+        else:
+            fig_comp = go.Figure(go.Bar(
+                x=df_comp[metrica_col], y=df_comp["jugador"],
+                orientation="h",
+                marker=dict(color=AZUL_CELESTE, opacity=0.9,
+                            line=dict(color="rgba(0,0,0,0.2)", width=1)),
+                text=[_fmt(v, metrica_col) for v in df_comp[metrica_col]],
+                textposition="outside", textfont=dict(color=BLANCO, size=11),
+            ))
+            t(fig_comp, height=max(300, len(df_comp) * 38))
+            chart(fig_comp)
 
-    df_evo = df_jugador.copy() if jugador_sel != "Todos" else df.copy()
+        section("Tabla de sesión")
+        df_t = df_sesion[["jugador","distancia","vel_max","carga","accel_max"]].copy()
+        df_t = df_t.rename(columns={
+            "jugador":"Jugador","distancia":"Dist (km)",
+            "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx"
+        }).sort_values("Jugador")
+        st.dataframe(df_t, use_container_width=True, hide_index=True)
 
-    if jugador_sel == "Todos":
-        df_evo = df_evo.groupby("fecha_str")[metrica_col].mean().reset_index()
-        df_evo = df_evo.merge(
-            df[["fecha", "fecha_str"]].drop_duplicates(), on="fecha_str"
-        ).sort_values("fecha")
-        titulo_evo = f"Media del equipo · {metrica_label}"
-    else:
-        df_evo = df_evo.sort_values("fecha")
-        titulo_evo = f"{jugador_sel} · {metrica_label}"
+    # ════════════════════════════════════════════════════════
+    # TAB INDIVIDUAL
+    # ════════════════════════════════════════════════════════
+    with tab_individual:
+        jugador_sel = st.selectbox("Jugador", jugadores, key="gps_jugador_ind")
+        df_jug = df[df["jugador"] == jugador_sel].sort_values("fecha")
 
-    fig_evo = go.Figure()
-    fig_evo.add_trace(go.Bar(
-        x=df_evo["fecha_str"], y=df_evo[metrica_col],
-        name=metrica_label,
-        marker=dict(color=AZUL_CELESTE, opacity=0.85,
-                    line=dict(color=DORADO, width=1)),
-        text=[f"{v:.2f}" if pd.notna(v) else "" for v in df_evo[metrica_col]],
-        textposition="outside",
-        textfont=dict(color=BLANCO, size=11),
-    ))
-    # Línea de media
-    media = df_evo[metrica_col].mean()
-    fig_evo.add_hline(y=media, line_dash="dot",
-                      line_color=DORADO, opacity=0.7,
-                      annotation_text=f"Media {media:.2f}",
-                      annotation_font_color=DORADO,
-                      annotation_position="top right")
-    t(fig_evo, height=360)
-    fig_evo.update_layout(title=dict(text=titulo_evo, font=dict(color=GRIS_MEDIO, size=13)))
-    chart(fig_evo)
+        if df_jug.empty:
+            st.info(f"Sin datos para {jugador_sel}.")
+        else:
+            # KPIs: última sesión vs media temporada
+            section(f"{jugador_sel} · Última sesión vs media temporada")
+            ultima = df_jug[df_jug["fecha"] == df_jug["fecha"].max()].iloc[0]
+            c1, c2, c3, c4 = st.columns(4)
+            for col_ui, col_key in zip([c1,c2,c3,c4],
+                                        ["distancia","vel_max","carga","accel_max"]):
+                label, suffix, tooltip = METRICAS_INFO[col_key]
+                val_ult  = ultima[col_key]  if col_key in ultima.index else None
+                val_med  = df_jug[col_key].mean() if col_key in df_jug.columns else None
+                delta    = (val_ult - val_med) if pd.notna(val_ult) and pd.notna(val_med) else None
+                delta_color = VERDE if delta and delta >= 0 else ROJO
+                delta_str   = (f"<span style='color:{delta_color};font-size:0.8rem;'>"
+                               f"{'▲' if delta>=0 else '▼'} {abs(delta):.2f} vs media"
+                               f"</span>") if delta is not None else ""
+                with col_ui:
+                    st.markdown(
+                        f"<div style='background:{AZUL_MEDIO};border-radius:10px;"
+                        f"padding:14px 16px;border-left:4px solid {DORADO};margin-bottom:8px;'>"
+                        f"<div style='color:{GRIS_MEDIO};font-size:0.7rem;text-transform:uppercase;"
+                        f"letter-spacing:0.08em;margin-bottom:4px;'>{label}</div>"
+                        f"<div style='color:{BLANCO};font-size:1.8rem;font-weight:700;line-height:1;'>"
+                        f"{_fmt(val_ult, col_key)}<span style='font-size:0.9rem;color:{AZUL_CELESTE}'>{suffix}</span></div>"
+                        f"<div style='margin-top:6px;'>{delta_str}</div>"
+                        f"<div style='font-size:0.68rem;color:{GRIS_MEDIO};margin-top:6px;line-height:1.3;'>{tooltip}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
 
-    # ── Sección 3: Comparativa jugadores (sesión seleccionada) ───────────────
-    section(f"Comparativa jugadores · {metrica_label} — {fecha_sel if fecha_sel != 'Última' else 'Última sesión'}")
+            # Evolución individual
+            section(f"Evolución · {jugador_sel} · {metrica_label}")
+            _evo_chart(df_jug, metrica_col, metrica_label, f"{jugador_sel} · {metrica_label}")
 
-    df_comp = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
-
-    if df_comp.empty:
-        st.info("Sin datos para esta sesión.")
-    else:
-        colores_bar = [DORADO if j == jugador_sel else AZUL_CELESTE for j in df_comp["jugador"]]
-        fig_comp = go.Figure(go.Bar(
-            x=df_comp[metrica_col], y=df_comp["jugador"],
-            orientation="h",
-            marker=dict(color=colores_bar, opacity=0.9,
-                        line=dict(color="rgba(0,0,0,0.2)", width=1)),
-            text=[f"{v:.2f}" for v in df_comp[metrica_col]],
-            textposition="outside",
-            textfont=dict(color=BLANCO, size=11),
-        ))
-        t(fig_comp, height=max(300, len(df_comp) * 36))
-        chart(fig_comp)
-
-    # ── Sección 4: Tabla completa ─────────────────────────────────────────────
-    section("Detalle por jugador y sesión")
-
-    cols_tabla = ["fecha_str", "jugador", "distancia", "vel_max", "carga", "accel_max"]
-    cols_exist  = [c for c in cols_tabla if c in df_jugador.columns]
-    df_tabla    = df_jugador[cols_exist].copy()
-    df_tabla    = df_tabla.rename(columns={
-        "fecha_str": "Fecha", "jugador": "Jugador",
-        "distancia": "Dist (km)", "vel_max": "Vel Máx",
-        "carga": "Carga GPS", "accel_max": "Accel Máx",
-    }).sort_values(["Fecha", "Jugador"])
-
-    st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+            # Tabla individual completa
+            section("Historial de sesiones")
+            df_hist = df_jug[["fecha_str","distancia","vel_max","carga","accel_max"]].copy()
+            df_hist = df_hist.rename(columns={
+                "fecha_str":"Fecha","distancia":"Dist (km)",
+                "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx"
+            })
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
 
 # ── CSS global ────────────────────────────────────────────────────────────────
