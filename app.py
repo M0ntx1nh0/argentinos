@@ -1487,7 +1487,7 @@ def page_fisica():
         fecha_label = fecha_sel
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab_equipo, tab_individual = st.tabs(["🏟️  Equipo", "👤  Individual"])
+    tab_equipo, tab_individual, tab_glosario = st.tabs(["🏟️  Equipo", "👤  Individual", "📖  Glosario"])
 
     # ════════════════════════════════════════════════════════
     # TAB EQUIPO
@@ -1578,6 +1578,65 @@ def page_fisica():
                 "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx"
             })
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+    # ════════════════════════════════════════════════════════
+    # TAB GLOSARIO
+    # ════════════════════════════════════════════════════════
+    with tab_glosario:
+        st.markdown(f"""
+        <p style="color:{GRIS_MEDIO};font-size:0.88rem;margin-bottom:20px;">
+        Métricas exportadas por Titan en el Training Report.
+        Las métricas <b style="color:{BLANCO}">en negrita</b> son las que se utilizan en la App.
+        </p>""", unsafe_allow_html=True)
+
+        glosario = [
+            ("Date",                    True,  "Fecha",                    "Fecha de la sesión de entrenamiento o partido."),
+            ("Player Name",             True,  "Nombre del jugador",       "Nombre completo del jugador registrado en Titan."),
+            ("Distance",                True,  "Distancia (km)",           "Kilómetros totales recorridos por el jugador durante la sesión."),
+            ("GPS Load",                True,  "Carga GPS",                "Índice de estrés físico total calculado por Titan. Combina distancia, intensidad, aceleraciones y tiempo en alta intensidad. No tiene unidades fijas — sirve para comparar esfuerzos entre sesiones y jugadores."),
+            ("Top Speed",               True,  "Velocidad Máxima (km/h)",  "Velocidad punta más alta registrada por el jugador en toda la sesión."),
+            ("Speed Zones  Distance",   True,  "HSR Distancia (km)",       "Distancia recorrida dentro de las zonas de alta velocidad configuradas en Titan. Equivalente al HSR (High Speed Running) de otros sistemas GPS."),
+            ("Speed Zones  Count",      True,  "HSR Entradas",             "Número de veces que el jugador entró en una zona de alta velocidad. Indica la frecuencia de esfuerzos intensos."),
+            ("Personal Bands  Distance",False, "Distancia Bandas Personales","Distancia en zonas de velocidad personalizadas por jugador según su perfil físico individual."),
+            ("Personal Bands  Count",   False, "Entradas Bandas Personales","Número de entradas en las bandas de velocidad personalizadas del jugador."),
+            ("Peak Accel",              True,  "Aceleración Máxima (m/s²)","Pico de aceleración más alto registrado en la sesión. Refleja la explosividad máxima del jugador."),
+            ("Accel Zones  Count",      False, "Entradas Zonas Aceleración","Número total de aceleraciones que superaron los umbrales definidos en Titan."),
+        ]
+
+        # Cabecera
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:0;
+                    background:{AZUL_CLARO};border-radius:8px 8px 0 0;padding:10px 16px;
+                    font-size:0.78rem;font-weight:700;color:{BLANCO};
+                    text-transform:uppercase;letter-spacing:0.06em;">
+            <div>Campo en Excel</div>
+            <div>Nombre en castellano</div>
+            <div>Descripción</div>
+        </div>""", unsafe_allow_html=True)
+
+        for i, (campo, en_app, nombre_es, descripcion) in enumerate(glosario):
+            bg = AZUL_MEDIO if i % 2 == 0 else AZUL_OSCURO
+            badge = (f"<span style='background:{DORADO};color:{AZUL_OSCURO};font-size:0.65rem;"
+                     f"font-weight:700;padding:2px 6px;border-radius:4px;margin-left:6px;'>"
+                     f"EN APP</span>") if en_app else ""
+            nombre_html = (f"<b style='color:{BLANCO}'>{nombre_es}</b>" if en_app
+                           else f"<span style='color:{GRIS_MEDIO}'>{nombre_es}</span>")
+            campo_html  = (f"<b style='color:{AZUL_CELESTE}'>{campo}</b>" if en_app
+                           else f"<span style='color:{GRIS_MEDIO};font-size:0.85rem'>{campo}</span>")
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:0;
+                        background:{bg};padding:12px 16px;font-size:0.85rem;
+                        border-bottom:1px solid rgba(106,175,230,0.08);">
+                <div>{campo_html}{badge}</div>
+                <div>{nombre_html}</div>
+                <div style="color:{GRIS_MEDIO};font-size:0.82rem;line-height:1.5;">{descripcion}</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:{AZUL_MEDIO};border-radius:0 0 8px 8px;padding:10px 16px;
+                    font-size:0.75rem;color:{GRIS_MEDIO};border-top:1px solid rgba(106,175,230,0.15);">
+            Fuente: Titan by Integrated Bionics · Los datos se actualizan ejecutando <code>script.py</code>
+        </div>""", unsafe_allow_html=True)
 
 
 # ── CSS global ────────────────────────────────────────────────────────────────
