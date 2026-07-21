@@ -1396,16 +1396,20 @@ def load_gps() -> pd.DataFrame:
 
 # ── Página: Física (GPS) ──────────────────────────────────────────────────────
 METRICAS_INFO = {
-    "distancia": ("Distancia (km)",      " km",   "Kilómetros recorridos durante la sesión."),
-    "vel_max":   ("Vel. Máxima (km/h)",  " km/h", "Velocidad punta máxima registrada."),
-    "carga":     ("Carga GPS",           "",      "Índice de estrés físico total (distancia + intensidad + aceleraciones)."),
-    "accel_max": ("Accel. Máxima (m/s²)"," m/s²", "Pico de aceleración. Refleja explosividad del esfuerzo."),
+    "distancia": ("Distancia (km)",        " km",   "Kilómetros recorridos durante la sesión."),
+    "vel_max":   ("Vel. Máxima (km/h)",    " km/h", "Velocidad punta máxima registrada."),
+    "carga":     ("Carga GPS",             "",      "Índice de estrés físico total (distancia + intensidad + aceleraciones)."),
+    "accel_max": ("Accel. Máxima (m/s²)",  " m/s²", "Pico de aceleración. Refleja explosividad del esfuerzo."),
+    "hsr_dist":  ("HSR Distancia (km)",    " km",   "Distancia recorrida en zonas de alta velocidad."),
+    "hsr_count": ("HSR Entradas",          "",      "Número de esfuerzos en alta velocidad durante la sesión."),
 }
 METRICA_MAP = {
     "Distancia (km)":       "distancia",
     "Carga GPS":            "carga",
     "Velocidad Máxima":     "vel_max",
     "Aceleración Máxima":   "accel_max",
+    "HSR Distancia":        "hsr_dist",
+    "HSR Entradas":         "hsr_count",
 }
 
 def _fmt(val, col):
