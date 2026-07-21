@@ -1418,10 +1418,11 @@ def _fmt(val, col):
     return f"{val:.2f}" if col in ("distancia", "accel_max") else f"{val:.1f}"
 
 def _kpis_equipo(df_sesion):
-    c1, c2, c3, c4 = st.columns(4)
+    cols = st.columns(6)
     for col_ui, (col_key, agg) in zip(
-        [c1, c2, c3, c4],
-        [("distancia","mean"),("vel_max","max"),("carga","mean"),("accel_max","mean")]
+        cols,
+        [("distancia","mean"),("vel_max","max"),("carga","mean"),
+         ("accel_max","mean"),("hsr_dist","mean"),("hsr_count","mean")]
     ):
         label, suffix, tooltip = METRICAS_INFO[col_key]
         val = df_sesion[col_key].agg(agg) if col_key in df_sesion.columns else None
@@ -1540,9 +1541,9 @@ def page_fisica():
             # KPIs: última sesión vs media temporada
             section(f"{jugador_sel} · Última sesión vs media temporada")
             ultima = df_jug[df_jug["fecha"] == df_jug["fecha"].max()].iloc[0]
-            c1, c2, c3, c4 = st.columns(4)
-            for col_ui, col_key in zip([c1,c2,c3,c4],
-                                        ["distancia","vel_max","carga","accel_max"]):
+            cols_ind = st.columns(6)
+            for col_ui, col_key in zip(cols_ind,
+                                        ["distancia","vel_max","carga","accel_max","hsr_dist","hsr_count"]):
                 label, suffix, tooltip = METRICAS_INFO[col_key]
                 val_ult  = ultima[col_key]  if col_key in ultima.index else None
                 val_med  = df_jug[col_key].mean() if col_key in df_jug.columns else None
