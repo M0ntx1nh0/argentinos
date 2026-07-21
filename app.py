@@ -1583,9 +1583,12 @@ def page_fisica():
                     color = colores_jugadores[i % len(colores_jugadores)]
                     fig_cm.add_trace(go.Scatter(
                         x=df_j["fecha_str"], y=df_j[metrica_comp_col],
-                        mode="lines+markers", name=jug,
+                        mode="lines+markers+text", name=jug,
                         line=dict(color=color, width=2),
                         marker=dict(size=7, color=color),
+                        text=[_fmt(v, metrica_comp_col) for v in df_j[metrica_comp_col]],
+                        textposition="top center",
+                        textfont=dict(color=color, size=10),
                     ))
                 t(fig_cm, height=380)
                 fig_cm.update_layout(title=dict(
