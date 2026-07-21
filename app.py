@@ -1521,12 +1521,77 @@ def page_fisica():
             chart(fig_comp)
 
         section("Tabla de sesión")
-        df_t = df_sesion[["jugador","distancia","vel_max","carga","accel_max"]].copy()
+        df_t = df_sesion[["jugador","distancia","vel_max","carga","accel_max","hsr_dist","hsr_count"]].copy()
         df_t = df_t.rename(columns={
-            "jugador":"Jugador","distancia":"Dist (km)",
-            "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx"
+            "jugador":"Jugador","distancia":"Dist (km)","vel_max":"Vel Máx",
+            "carga":"Carga GPS","accel_max":"Accel Máx",
+            "hsr_dist":"HSR Dist (km)","hsr_count":"HSR Entradas"
         }).sort_values("Jugador")
         st.dataframe(df_t, use_container_width=True, hide_index=True)
+
+        # ── Comparación de jugadores ──────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("Comparación de jugadores")
+
+        cf1, cf2, cf3 = st.columns([3, 2, 2])
+        with cf1:
+            jugadores_sel = st.multiselect(
+                "Selecciona jugadores", jugadores,
+                default=jugadores[:3] if len(jugadores) >= 3 else jugadores,
+                key="gps_comp_jugadores"
+            )
+        with cf2:
+            metrica_comp_label = st.selectbox(
+                "Métrica", list(METRICA_MAP.keys()), key="gps_comp_metrica"
+            )
+            metrica_comp_col = METRICA_MAP[metrica_comp_label]
+        with cf3:
+            vista_comp = st.selectbox(
+                "Vista", ["Por sesión", "Media temporada"], key="gps_comp_vista"
+            )
+
+        if not jugadores_sel:
+            st.info("Selecciona al menos un jugador.")
+        else:
+            df_comp_multi = df[df["jugador"].isin(jugadores_sel)]
+
+            if vista_comp == "Media temporada":
+                df_bar = (df_comp_multi.groupby("jugador")[metrica_comp_col]
+                          .mean().reset_index()
+                          .sort_values(metrica_comp_col, ascending=True))
+                fig_cm = go.Figure(go.Bar(
+                    x=df_bar[metrica_comp_col], y=df_bar["jugador"],
+                    orientation="h",
+                    marker=dict(color=AZUL_CELESTE, opacity=0.9,
+                                line=dict(color=DORADO, width=1)),
+                    text=[_fmt(v, metrica_comp_col) for v in df_bar[metrica_comp_col]],
+                    textposition="outside", textfont=dict(color=BLANCO, size=11),
+                ))
+                t(fig_cm, height=max(280, len(jugadores_sel) * 44))
+                fig_cm.update_layout(title=dict(
+                    text=f"Media temporada · {metrica_comp_label}",
+                    font=dict(color=GRIS_MEDIO, size=13)))
+                chart(fig_cm)
+
+            else:  # Por sesión — líneas
+                colores_jugadores = [AZUL_CELESTE, DORADO, VERDE, ROJO,
+                                     "#A78BFA", "#F97316", "#34D399", "#FB7185"]
+                fig_cm = go.Figure()
+                for i, jug in enumerate(jugadores_sel):
+                    df_j = (df_comp_multi[df_comp_multi["jugador"] == jug]
+                            .sort_values("fecha"))
+                    color = colores_jugadores[i % len(colores_jugadores)]
+                    fig_cm.add_trace(go.Scatter(
+                        x=df_j["fecha_str"], y=df_j[metrica_comp_col],
+                        mode="lines+markers", name=jug,
+                        line=dict(color=color, width=2),
+                        marker=dict(size=7, color=color),
+                    ))
+                t(fig_cm, height=380)
+                fig_cm.update_layout(title=dict(
+                    text=f"Evolución por sesión · {metrica_comp_label}",
+                    font=dict(color=GRIS_MEDIO, size=13)))
+                chart(fig_cm)
 
     # ════════════════════════════════════════════════════════
     # TAB INDIVIDUAL
