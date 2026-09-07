@@ -1527,37 +1527,10 @@ def _load_gps_from_drive() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _load_gps_from_local() -> pd.DataFrame:
-    gps_dir = os.path.join(os.path.dirname(__file__), "data", "GPS")
-    frames = []
-    if not os.path.isdir(gps_dir):
-        return pd.DataFrame()
-
-    for fname in sorted(os.listdir(gps_dir)):
-        if not fname.endswith(".xlsx") or fname.startswith("~$"):
-            continue
-        frame = _workbook_to_dataframe(os.path.join(gps_dir, fname))
-        if not frame.empty:
-            frame["source_file"] = fname
-            frames.append(frame)
-
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_gps() -> pd.DataFrame:
-    """Carga los Training Report desde Google Drive y usa data/GPS como fallback local."""
-    try:
-        drive_df = _load_gps_from_drive()
-        if not drive_df.empty:
-            return _normalize_gps_dataframe(drive_df)
-    except Exception:
-        pass
-
-    local_df = _load_gps_from_local()
-    return _normalize_gps_dataframe(local_df)
+    """Carga exclusivamente los Training Report disponibles en Google Drive."""
+    return _normalize_gps_dataframe(_load_gps_from_drive())
 
 
 # ── Página: Física (GPS) ──────────────────────────────────────────────────────
@@ -1629,7 +1602,7 @@ def page_fisica():
 
     df = load_gps()
     if df.empty:
-        st.info("No hay archivos GPS disponibles en la carpeta GPS de Drive ni en data/GPS/. Ejecuta script.py para generarlos.")
+        st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
         return
 
     jugadores  = sorted(df["jugador"].dropna().unique())
