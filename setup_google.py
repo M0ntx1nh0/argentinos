@@ -15,13 +15,12 @@ Pasos previos (solo la primera vez):
 """
 
 from pathlib import Path
-import gspread
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.oauth2.credentials import Credentials
-import json
 
-SCOPES        = ["https://www.googleapis.com/auth/spreadsheets.readonly",
-                 "https://www.googleapis.com/auth/drive.readonly"]
+SCOPES        = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+]
 CREDS_FILE    = Path(__file__).parent / "credentials_google.json"
 TOKEN_FILE    = Path(__file__).parent / "token_google.json"
 
@@ -37,6 +36,7 @@ def main():
 
     TOKEN_FILE.write_text(creds.to_json())
     print(f"✓ Token guardado en {TOKEN_FILE}")
+    print("  Asegúrate de autorizar con la cuenta clubargentino.sdc@gmail.com.")
     print("  Ya puedes ejecutar script.py normalmente.")
 
 

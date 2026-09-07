@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .streamlit/secrets.toml
+.env
+credentials_google.json
+token_google.json
+titan-argentinos-503811-67466c1aab4b.json

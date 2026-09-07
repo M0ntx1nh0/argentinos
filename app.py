@@ -4,10 +4,19 @@ Desarrollado por Ramón Codesido · Sport Data Campus
 """
 
 import base64
+import io
+import json
 import os
+from pathlib import Path
+
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from plotly.subplots import make_subplots
 from data_loader import load_all
 
@@ -24,6 +33,30 @@ ROJO         = "#E85D75"
 
 ASSETS = os.path.join(os.path.dirname(__file__), "assets")
 TRAMO_ORDER = ["0-15", "16-30", "31-45", "45+", "46-60", "61-75", "76-90", "90+"]
+
+load_dotenv(Path(__file__).parent / ".env")
+
+
+def _streamlit_secret(name: str) -> str:
+    """Obtiene secretos en Cloud sin exigir un secrets.toml en desarrollo local."""
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except FileNotFoundError:
+        return ""
+
+
+TOKEN_FILE = Path(__file__).parent / "token_google.json"
+SERVICE_ACCOUNT_FILE = Path(os.getenv(
+    "GOOGLE_SERVICE_ACCOUNT_FILE",
+    Path(__file__).parent / "titan-argentinos-503811-67466c1aab4b.json",
+))
+GOOGLE_DRIVE_FOLDER_ID = (
+    _streamlit_secret("GOOGLE_DRIVE_FOLDER_ID")
+    or os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+)
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 
 
 # ── Helper: template de plotly con profundidad ────────────────────────────────
@@ -1350,29 +1383,101 @@ def page_rivales(df: pd.DataFrame):
 
 
 # ── GPS loader ───────────────────────────────────────────────────────────────
-def load_gps() -> pd.DataFrame:
-    """Carga todos los Training Report .xlsx de data/GPS/ y devuelve _synced_data."""
+def _get_google_creds() -> Credentials:
+    service_account_json = _streamlit_secret("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if service_account_json:
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(service_account_json), scopes=GOOGLE_SCOPES
+        )
+        creds.refresh(Request())
+        return creds
+
+    if SERVICE_ACCOUNT_FILE.exists():
+        creds = service_account.Credentials.from_service_account_file(
+            str(SERVICE_ACCOUNT_FILE), scopes=GOOGLE_SCOPES
+        )
+        creds.refresh(Request())
+        return creds
+
+    if not TOKEN_FILE.exists():
+        raise FileNotFoundError(
+            "No se encontró la clave de cuenta de servicio ni token_google.json para leer GPS desde Drive."
+        )
+
+    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), GOOGLE_SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        TOKEN_FILE.write_text(creds.to_json())
+    return creds
+
+
+def _drive_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_get_google_creds().token}"}
+
+
+def _drive_query(name: str) -> str:
+    return name.replace("'", "\\'")
+
+
+def _list_drive_gps_files(folder_id: str) -> list[dict]:
+    query = (
+        f"'{folder_id}' in parents and "
+        f"mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' and "
+        f"trashed = false"
+    )
+    resp = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers=_drive_headers(),
+        params={
+            "q": query,
+            "fields": "files(id,name,modifiedTime)",
+            "orderBy": "name",
+            "pageSize": 200,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    files = resp.json().get("files", [])
+    return [
+        f for f in files
+        if f.get("name", "").endswith(".xlsx") and not f.get("name", "").startswith("~$")
+    ]
+
+
+def _download_drive_file(file_id: str) -> bytes:
+    resp = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}",
+        headers=_drive_headers(),
+        params={"alt": "media", "supportsAllDrives": "true"},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
+def _workbook_to_dataframe(workbook_like) -> pd.DataFrame:
     import openpyxl
-    gps_dir = os.path.join(os.path.dirname(__file__), "data", "GPS")
-    frames = []
-    if not os.path.isdir(gps_dir):
+
+    wb = openpyxl.load_workbook(workbook_like, data_only=True, read_only=True)
+    if "_synced_data" not in wb.sheetnames:
         return pd.DataFrame()
-    for fname in sorted(os.listdir(gps_dir)):
-        if not fname.endswith(".xlsx") or fname.startswith("~$"):
-            continue
-        wb = openpyxl.load_workbook(os.path.join(gps_dir, fname), data_only=True, read_only=True)
-        if "_synced_data" not in wb.sheetnames:
-            continue
-        ws = wb["_synced_data"]
-        rows = list(ws.iter_rows(values_only=True))
-        if len(rows) < 2:
-            continue
-        headers = [str(h).strip() if h else "" for h in rows[0]]
-        data = [dict(zip(headers, r)) for r in rows[1:]]
-        frames.append(pd.DataFrame(data))
-    if not frames:
+
+    ws = wb["_synced_data"]
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
         return pd.DataFrame()
-    df = pd.concat(frames, ignore_index=True)
+
+    headers = [str(h).strip() if h else "" for h in rows[0]]
+    data = [dict(zip(headers, r)) for r in rows[1:]]
+    return pd.DataFrame(data)
+
+
+def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
     df = df.rename(columns={
         "Date": "fecha",
         "Player Name": "jugador",
@@ -1384,6 +1489,17 @@ def load_gps() -> pd.DataFrame:
         "Speed Zones  Distance": "hsr_dist",
         "Speed Zones  Count": "hsr_count",
     })
+
+    # Titan usa estos encabezados en las exportaciones recientes.
+    for source, target in {
+        "GPS Distance": "distancia",
+        "GPS Player Load": "carga",
+        "GPS Top Speed": "vel_max",
+        "GPS Peak Accel": "accel_max",
+    }.items():
+        if source in df.columns and target not in df.columns:
+            df = df.rename(columns={source: target})
+
     for col in ["distancia", "carga", "vel_max", "accel_max", "accel_count", "hsr_dist", "hsr_count"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -1392,6 +1508,56 @@ def load_gps() -> pd.DataFrame:
         df = df.dropna(subset=["fecha"])
         df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
     return df.sort_values("fecha").reset_index(drop=True)
+
+
+def _load_gps_from_drive() -> pd.DataFrame:
+    if not GOOGLE_DRIVE_FOLDER_ID:
+        return pd.DataFrame()
+
+    frames = []
+    for drive_file in _list_drive_gps_files(GOOGLE_DRIVE_FOLDER_ID):
+        content = _download_drive_file(drive_file["id"])
+        frame = _workbook_to_dataframe(io.BytesIO(content))
+        if not frame.empty:
+            frame["source_file"] = drive_file["name"]
+            frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _load_gps_from_local() -> pd.DataFrame:
+    gps_dir = os.path.join(os.path.dirname(__file__), "data", "GPS")
+    frames = []
+    if not os.path.isdir(gps_dir):
+        return pd.DataFrame()
+
+    for fname in sorted(os.listdir(gps_dir)):
+        if not fname.endswith(".xlsx") or fname.startswith("~$"):
+            continue
+        frame = _workbook_to_dataframe(os.path.join(gps_dir, fname))
+        if not frame.empty:
+            frame["source_file"] = fname
+            frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_gps() -> pd.DataFrame:
+    """Carga los Training Report desde Google Drive y usa data/GPS como fallback local."""
+    try:
+        drive_df = _load_gps_from_drive()
+        if not drive_df.empty:
+            return _normalize_gps_dataframe(drive_df)
+    except Exception:
+        pass
+
+    local_df = _load_gps_from_local()
+    return _normalize_gps_dataframe(local_df)
 
 
 # ── Página: Física (GPS) ──────────────────────────────────────────────────────
@@ -1463,7 +1629,7 @@ def page_fisica():
 
     df = load_gps()
     if df.empty:
-        st.info("No hay archivos GPS en data/GPS/. Ejecuta script.py para descargar el Training Report.")
+        st.info("No hay archivos GPS disponibles en la carpeta GPS de Drive ni en data/GPS/. Ejecuta script.py para generarlos.")
         return
 
     jugadores  = sorted(df["jugador"].dropna().unique())
