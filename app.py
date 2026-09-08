@@ -1598,12 +1598,11 @@ def _kpis_equipo(df_sesion):
             )
 
 def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
-    colors = _quartile_colors(df_evo[metrica_col])
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_evo["fecha_str"], y=df_evo[metrica_col],
         name=metrica_label,
-        marker=dict(color=colors, opacity=0.9, line=dict(color=DORADO, width=1)),
+        marker=dict(color=AZUL_CELESTE, opacity=0.85, line=dict(color=DORADO, width=1)),
         text=[_fmt(v, metrica_col) for v in df_evo[metrica_col]],
         textposition="outside", textfont=dict(color=BLANCO, size=11),
     ))
@@ -1640,6 +1639,17 @@ def _quartile_legend():
     """, unsafe_allow_html=True)
 
 
+def _load_threshold_legend():
+    st.markdown(f"""
+    <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:2px 0 6px;
+                color:{GRIS_MEDIO};font-size:0.78rem;">
+        <span><b style="color:{ROJO}">■</b> ≥ 200 · sobrecarga</span>
+        <span><b style="color:{DORADO}">■</b> 160–199 · alta carga</span>
+        <span><b style="color:{AZUL_CELESTE}">■</b> &lt; 160 · normal</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def _session_summary_cards(df_sesion):
     """KPIs operativos que acompañan las vistas de carga de una sesión."""
     distancia_total = df_sesion["distancia"].sum()
@@ -1660,10 +1670,10 @@ def _session_summary_cards(df_sesion):
 
 def _load_chart(df_sesion):
     data = df_sesion.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
-    colors = _quartile_colors(data["carga"])
+    colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in data["carga"]]
     st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
                 "Carga individual · umbrales de referencia</div>", unsafe_allow_html=True)
-    _quartile_legend()
+    _load_threshold_legend()
     fig = go.Figure(go.Bar(
         x=data["jugador"], y=data["carga"],
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
@@ -1709,10 +1719,8 @@ def _distance_intensity_chart(df_sesion):
 
 def _acceleration_risk_chart(df_sesion):
     data = df_sesion.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
-    colors = _quartile_colors(data["accel_count"])
-    st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
-                "Rangos relativos de la sesión</div>", unsafe_allow_html=True)
-    _quartile_legend()
+    top_risk = set(data.head(3)["jugador"])
+    colors = [ROJO if player in top_risk else AZUL_CELESTE for player in data["jugador"]]
     fig = go.Figure(go.Bar(
         x=data["jugador"], y=data["accel_count"],
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
@@ -1725,7 +1733,7 @@ def _acceleration_risk_chart(df_sesion):
     ))
     t(fig, height=440, margin=dict(t=36, b=110, l=52, r=36))
     fig.update_layout(
-        title=dict(text="Volumen de aceleraciones por jugador", font=dict(color=GRIS_MEDIO, size=13)),
+        title=dict(text="Top 3 · mayor volumen de aceleraciones", font=dict(color=GRIS_MEDIO, size=13)),
         showlegend=False,
     )
     fig.update_xaxes(tickangle=-45, title_text="")
