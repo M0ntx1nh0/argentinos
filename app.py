@@ -50,9 +50,9 @@ SERVICE_ACCOUNT_FILE = Path(os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE",
     Path(__file__).parent / "titan-argentinos-503811-67466c1aab4b.json",
 ))
-GOOGLE_DRIVE_FOLDER_ID = (
-    _streamlit_secret("GOOGLE_DRIVE_FOLDER_ID")
-    or os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+GOOGLE_SEASON_FOLDER_ID = (
+    _streamlit_secret("GOOGLE_SEASON_FOLDER_ID")
+    or os.getenv("GOOGLE_SEASON_FOLDER_ID", "").strip()
 )
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
@@ -1415,8 +1415,31 @@ def _drive_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_get_google_creds().token}"}
 
 
-def _drive_query(name: str) -> str:
-    return name.replace("'", "\\'")
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_season_subfolder_id(season_folder_id: str, folder_name: str) -> str:
+    """Resuelve carpetas como GPS o Partidos dentro de la temporada activa."""
+    query = (
+        f"'{season_folder_id}' in parents and "
+        f"name = '{folder_name.replace("'", "\\'")}' and "
+        "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    )
+    resp = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers=_drive_headers(),
+        params={
+            "q": query,
+            "fields": "files(id,name)",
+            "pageSize": 10,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    folders = resp.json().get("files", [])
+    if not folders:
+        raise FileNotFoundError(f"No existe la carpeta '{folder_name}' en la temporada configurada.")
+    return folders[0]["id"]
 
 
 def _list_drive_gps_files(folder_id: str) -> list[dict]:
@@ -1511,11 +1534,12 @@ def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_gps_from_drive() -> pd.DataFrame:
-    if not GOOGLE_DRIVE_FOLDER_ID:
-        return pd.DataFrame()
+    if not GOOGLE_SEASON_FOLDER_ID:
+        raise ValueError("Falta configurar GOOGLE_SEASON_FOLDER_ID en Streamlit Secrets.")
 
     frames = []
-    for drive_file in _list_drive_gps_files(GOOGLE_DRIVE_FOLDER_ID):
+    gps_folder_id = _get_season_subfolder_id(GOOGLE_SEASON_FOLDER_ID, "GPS")
+    for drive_file in _list_drive_gps_files(gps_folder_id):
         content = _download_drive_file(drive_file["id"])
         frame = _workbook_to_dataframe(io.BytesIO(content))
         if not frame.empty:
@@ -1977,7 +2001,11 @@ def main():
     inject_css()
 
     with st.spinner("Cargando datos..."):
-        df = load_all()
+        if not GOOGLE_SEASON_FOLDER_ID:
+            st.error("Falta configurar GOOGLE_SEASON_FOLDER_ID en Streamlit Secrets.")
+            st.stop()
+        partidos_folder_id = _get_season_subfolder_id(GOOGLE_SEASON_FOLDER_ID, "Partidos")
+        df = load_all(drive_folder_id=partidos_folder_id, drive_headers=_drive_headers())
 
     if df.empty:
         st.error("No se encontraron datos en /data")

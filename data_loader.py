@@ -4,9 +4,12 @@ Lee y limpia los CSVs de Hudl Titan y devuelve un DataFrame
 con una fila por (partido, nivel, tramo).
 """
 
+import io
 import os
 import re
+
 import pandas as pd
+import requests
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -107,14 +110,15 @@ def _clean_value(val, col_interno: str = ""):
         return s
 
 
-def _parse_csv(filepath: str) -> pd.DataFrame:
-    """Parsea un CSV de Hudl y devuelve DataFrame limpio."""
-    with open(filepath, encoding="utf-8") as f:
-        title = f.readline().strip()
-    match = re.match(r"CAdF vs (\w+)", title)
-    rival = match.group(1) if match else "Desconocido"
+def _parse_csv_text(content: str) -> pd.DataFrame:
+    """Parsea el contenido de un CSV de Hudl y devuelve un DataFrame limpio."""
+    source = io.StringIO(content)
+    title = source.readline().strip()
+    match = re.match(r"CAdF\s+(?:vs|@)\s+(.+?)(?:\s+—|$)", title)
+    rival = match.group(1).strip() if match else "Desconocido"
 
-    raw = pd.read_csv(filepath, header=None, skiprows=1, dtype=str)
+    source.seek(0)
+    raw = pd.read_csv(source, header=None, skiprows=1, dtype=str)
     raw.columns = raw.iloc[0].tolist()
     raw = raw.iloc[1:].reset_index(drop=True)
 
@@ -143,16 +147,49 @@ def _parse_csv(filepath: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def load_all() -> pd.DataFrame:
-    """Carga todos los CSVs de la carpeta data/ y los concatena."""
+def _parse_csv(filepath: str) -> pd.DataFrame:
+    """Compatibilidad para cargar un CSV de Hudl desde el sistema local."""
+    with open(filepath, encoding="utf-8-sig") as source:
+        return _parse_csv_text(source.read())
+
+
+def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFrame]:
+    query = f"'{folder_id}' in parents and trashed = false"
+    response = requests.get(
+        "https://www.googleapis.com/drive/v3/files",
+        headers=headers,
+        params={
+            "q": query,
+            "fields": "files(id,name,mimeType)",
+            "orderBy": "name",
+            "pageSize": 200,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+
     frames = []
-    for fname in sorted(os.listdir(DATA_DIR)):
-        if fname.endswith(".csv"):
-            path = os.path.join(DATA_DIR, fname)
-            try:
-                frames.append(_parse_csv(path))
-            except Exception as e:
-                print(f"[data_loader] Error en {fname}: {e}")
+    for drive_file in response.json().get("files", []):
+        if not drive_file.get("name", "").lower().endswith(".csv"):
+            continue
+        content = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{drive_file['id']}",
+            headers=headers,
+            params={"alt": "media", "supportsAllDrives": "true"},
+            timeout=60,
+        )
+        content.raise_for_status()
+        frames.append(_parse_csv_text(content.content.decode("utf-8-sig")))
+    return frames
+
+
+def load_all(drive_folder_id: str, drive_headers: dict[str, str]) -> pd.DataFrame:
+    """Carga exclusivamente los CSVs de Partidos disponibles en Google Drive."""
+    if not drive_folder_id or not drive_headers:
+        raise ValueError("Faltan la carpeta o las credenciales para leer los partidos desde Drive.")
+    frames = _load_drive_csvs(drive_folder_id, drive_headers)
 
     if not frames:
         return pd.DataFrame()
@@ -172,6 +209,4 @@ def load_all() -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    df = load_all()
-    temp = df[df["nivel"] == "temporada"][["rival", "goles", "goles_enc"]]
-    print(temp.to_string())
+    print("Ejecuta la aplicación Streamlit para cargar Partidos desde Google Drive.")
