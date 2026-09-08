@@ -136,7 +136,11 @@ def _parse_csv_text(content: str) -> pd.DataFrame:
     rows = []
     for _, row in raw.iterrows():
         tramo_raw = str(row.iloc[0]).strip()
-        nivel     = NIVEL_MAP.get(tramo_raw, "tramo")
+        nivel = (
+            "temporada"
+            if re.fullmatch(r"\d{4}-\d{4} Season", tramo_raw)
+            else NIVEL_MAP.get(tramo_raw, "tramo")
+        )
         record    = {"partido": f"CAdF vs {rival}", "rival": rival,
                      "nivel": nivel, "tramo_raw": tramo_raw}
         for col_hudl, col_interno in COL_MAP.items():
@@ -197,13 +201,13 @@ def load_all(drive_folder_id: str, drive_headers: dict[str, str]) -> pd.DataFram
     df = pd.concat(frames, ignore_index=True)
 
     tramo_order = [
-        "2025-2026 Season",
         "1º mitad", "2º mitad",
         "0-15", "16-30", "31-45", "45+",
         "46-60", "61-75", "76-90", "90+",
     ]
     df["tramo_orden"] = df["tramo_raw"].apply(
-        lambda x: tramo_order.index(x) if x in tramo_order else 99
+        lambda x: 0 if re.fullmatch(r"\d{4}-\d{4} Season", str(x))
+        else tramo_order.index(x) + 1 if x in tramo_order else 99
     )
     return df.sort_values(["partido", "tramo_orden"]).reset_index(drop=True)
 
