@@ -1844,8 +1844,9 @@ def _workload_conclusion(df, df_sesion, fecha_label: str):
                 padding:14px 16px;margin-bottom:10px;color:{BLANCO};font-size:0.92rem;">
         <b>{headline}</b><br>
         <span style="color:{GRIS_MEDIO};font-size:0.8rem;line-height:1.45;">
-        Señal automática: una o más métricas superan en ≥30% la media de las tres sesiones previas
-        del propio jugador. <b>Recomendación:</b> {recommendation}</span>
+        Regla: cada señal aparece cuando GPS Load, HSR o aceleraciones superan en ≥30% la media de
+        las tres sesiones previas del propio jugador. Una señal implica <b>Vigilar</b>; dos o más,
+        <b>Prioridad alta</b>. <b>Recomendación:</b> {recommendation}</span>
     </div>
     """, unsafe_allow_html=True)
 
