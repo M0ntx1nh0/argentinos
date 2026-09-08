@@ -1598,11 +1598,12 @@ def _kpis_equipo(df_sesion):
             )
 
 def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
+    colors = _quartile_colors(df_evo[metrica_col])
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_evo["fecha_str"], y=df_evo[metrica_col],
         name=metrica_label,
-        marker=dict(color=AZUL_CELESTE, opacity=0.85, line=dict(color=DORADO, width=1)),
+        marker=dict(color=colors, opacity=0.9, line=dict(color=DORADO, width=1)),
         text=[_fmt(v, metrica_col) for v in df_evo[metrica_col]],
         textposition="outside", textfont=dict(color=BLANCO, size=11),
     ))
@@ -1614,6 +1615,29 @@ def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
     t(fig, height=360)
     fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
     chart(fig)
+
+
+def _quartile_colors(values: pd.Series) -> list[str]:
+    """Distingue cuatro rangos relativos dentro de la sesión, de menor a mayor."""
+    palette = ["#477FB8", AZUL_CELESTE, DORADO, ROJO]
+    ranks = values.rank(method="first", pct=True)
+    return [
+        palette[0] if rank <= 0.25 else palette[1] if rank <= 0.5
+        else palette[2] if rank <= 0.75 else palette[3]
+        for rank in ranks
+    ]
+
+
+def _quartile_legend():
+    st.markdown(f"""
+    <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:2px 0 6px;
+                color:{GRIS_MEDIO};font-size:0.78rem;">
+        <span><b style="color:#477FB8">■</b> Cuartil 1 · menor valor</span>
+        <span><b style="color:{AZUL_CELESTE}">■</b> Cuartil 2</span>
+        <span><b style="color:{DORADO}">■</b> Cuartil 3</span>
+        <span><b style="color:{ROJO}">■</b> Cuartil 4 · mayor valor</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def _session_summary_cards(df_sesion):
@@ -1636,7 +1660,10 @@ def _session_summary_cards(df_sesion):
 
 def _load_chart(df_sesion):
     data = df_sesion.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
-    colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in data["carga"]]
+    colors = _quartile_colors(data["carga"])
+    st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
+                "Carga individual · umbrales de referencia</div>", unsafe_allow_html=True)
+    _quartile_legend()
     fig = go.Figure(go.Bar(
         x=data["jugador"], y=data["carga"],
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
@@ -1649,17 +1676,9 @@ def _load_chart(df_sesion):
     ))
     fig.add_hline(y=160, line_dash="dot", line_color=DORADO, line_width=1.5)
     fig.add_hline(y=200, line_dash="dot", line_color=ROJO, line_width=1.5)
-    t(fig, height=440, margin=dict(t=36, b=110, l=52, r=36))
+    t(fig, height=440, margin=dict(t=24, b=110, l=52, r=36))
     fig.update_layout(
-        title=dict(text="Carga individual · umbrales de referencia", font=dict(color=GRIS_MEDIO, size=13)),
         showlegend=False,
-        annotations=[
-            dict(xref="paper", yref="paper", x=0.01, y=1.14, showarrow=False,
-                 text="<span style='color:#E85D75'>■</span> ≥ 200 sobrecarga &nbsp;&nbsp; "
-                      "<span style='color:#C9A84C'>■</span> 160–199 alta carga &nbsp;&nbsp; "
-                      "<span style='color:#6AAFE6'>■</span> &lt; 160 normal",
-                 font=dict(color=GRIS_MEDIO, size=12), align="left"),
-        ],
     )
     fig.update_xaxes(tickangle=-45, title_text="")
     fig.update_yaxes(title_text="GPS Load", rangemode="tozero")
@@ -1669,9 +1688,11 @@ def _load_chart(df_sesion):
 def _distance_intensity_chart(df_sesion):
     data = df_sesion.dropna(subset=["jugador", "distancia", "hsr_dist"])
     fig = go.Figure(go.Scatter(
-        x=data["distancia"], y=data["hsr_dist"], mode="markers",
+        x=data["distancia"], y=data["hsr_dist"], mode="markers+text",
         marker=dict(size=15, color=AZUL_CELESTE, opacity=0.9,
                     line=dict(color=DORADO, width=1)),
+        text=data["jugador"], textposition="top center",
+        textfont=dict(color=BLANCO, size=10),
         customdata=data[["jugador", "carga", "vel_max"]],
         hovertemplate=("<b>%{customdata[0]}</b><br>Distancia: %{x:.2f} km<br>"
                        "HSR: %{y:.2f} km<br>GPS Load: %{customdata[1]:.1f}<br>"
@@ -1688,8 +1709,10 @@ def _distance_intensity_chart(df_sesion):
 
 def _acceleration_risk_chart(df_sesion):
     data = df_sesion.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
-    top_risk = set(data.head(3)["jugador"])
-    colors = [ROJO if player in top_risk else AZUL_CELESTE for player in data["jugador"]]
+    colors = _quartile_colors(data["accel_count"])
+    st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
+                "Rangos relativos de la sesión</div>", unsafe_allow_html=True)
+    _quartile_legend()
     fig = go.Figure(go.Bar(
         x=data["jugador"], y=data["accel_count"],
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
@@ -1702,7 +1725,7 @@ def _acceleration_risk_chart(df_sesion):
     ))
     t(fig, height=440, margin=dict(t=36, b=110, l=52, r=36))
     fig.update_layout(
-        title=dict(text="Top 3 · mayor volumen de aceleraciones", font=dict(color=GRIS_MEDIO, size=13)),
+        title=dict(text="Volumen de aceleraciones por jugador", font=dict(color=GRIS_MEDIO, size=13)),
         showlegend=False,
     )
     fig.update_xaxes(tickangle=-45, title_text="")
@@ -1712,15 +1735,22 @@ def _acceleration_risk_chart(df_sesion):
 
 def _player_comparison_chart(df_sesion, metrica_col, metrica_label):
     data = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
+    colors = _quartile_colors(data[metrica_col])
+    _quartile_legend()
+    metric_title, _, _ = METRICAS_INFO[metrica_col]
     fig = go.Figure(go.Bar(
         x=data[metrica_col], y=data["jugador"], orientation="h",
-        marker=dict(color=AZUL_CELESTE, opacity=0.9,
+        marker=dict(color=colors, opacity=0.9,
                     line=dict(color="rgba(0,0,0,0.2)", width=1)),
         text=[_fmt(value, metrica_col) for value in data[metrica_col]],
         textposition="outside", textfont=dict(color=BLANCO, size=11),
     ))
     t(fig, height=max(300, len(data) * 38))
-    fig.update_layout(showlegend=False)
+    fig.update_layout(
+        title=dict(text=f"{metric_title} por jugador", font=dict(color=GRIS_MEDIO, size=13)),
+        showlegend=False,
+    )
+    fig.update_xaxes(title_text=metric_title)
     chart(fig)
 
 
