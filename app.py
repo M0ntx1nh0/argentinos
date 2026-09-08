@@ -1529,6 +1529,10 @@ def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
         df = df.dropna(subset=["fecha"])
+        # Los Training Report acumulados pueden repetir jugadores de sesiones anteriores.
+        df = df.sort_values(["fecha", "source_file"]).drop_duplicates(
+            subset=["fecha", "jugador"], keep="first"
+        )
         df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
     return df.sort_values("fecha").reset_index(drop=True)
 
@@ -1762,6 +1766,101 @@ def _player_comparison_chart(df_sesion, metrica_col, metrica_label):
     chart(fig)
 
 
+def _workload_alerts(df, fecha_sesion: pd.Timestamp) -> pd.DataFrame:
+    """Señales de carga relativas a las tres sesiones previas del jugador."""
+    current = df[df["fecha"] == fecha_sesion]
+    history = df[df["fecha"] < fecha_sesion]
+    metrics = [
+        ("carga", "GPS Load"),
+        ("hsr_dist", "HSR"),
+        ("accel_count", "aceleraciones"),
+    ]
+    rows = []
+
+    for _, player in current.iterrows():
+        previous = history[history["jugador"] == player["jugador"]].sort_values("fecha").tail(3)
+        if len(previous) < 3:
+            continue
+
+        flags = []
+        details = []
+        for column, label in metrics:
+            value = player.get(column)
+            baseline = previous[column].mean() if column in previous else None
+            if not pd.notna(value) or not pd.notna(baseline) or baseline <= 0:
+                continue
+            ratio = value / baseline
+            if ratio >= 1.30:
+                flags.append(label)
+                details.append(f"{label} +{(ratio - 1) * 100:.0f}%")
+
+        if flags:
+            rows.append({
+                "jugador": player["jugador"],
+                "nivel": "Prioridad alta" if len(flags) >= 2 else "Vigilar",
+                "senales": len(flags),
+                "motivo": " · ".join(details),
+                "sesiones_base": len(previous),
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=["jugador", "nivel", "senales", "motivo", "sesiones_base"])
+    return pd.DataFrame(rows).sort_values(["senales", "jugador"], ascending=[False, True])
+
+
+def _workload_conclusion(df, df_sesion, fecha_label: str):
+    alerts = _workload_alerts(df, df_sesion["fecha"].iloc[0])
+    eligible = sum(
+        len(df[(df["jugador"] == player) & (df["fecha"] < df_sesion["fecha"].iloc[0])]) >= 3
+        for player in df_sesion["jugador"].dropna().unique()
+    )
+
+    section(f"Conclusión automática de carga · {fecha_label}")
+    if eligible == 0:
+        st.info("Aún no hay tres sesiones previas por jugador para generar alertas individuales fiables.")
+        return
+
+    high_priority = alerts[alerts["nivel"] == "Prioridad alta"]
+    monitor = alerts[alerts["nivel"] == "Vigilar"]
+    if alerts.empty:
+        headline = "No se detectan picos relativos de carga en los jugadores con historial suficiente."
+        recommendation = "Mantener la planificación prevista y seguir registrando el contexto de cada sesión."
+        color = VERDE
+    elif not high_priority.empty:
+        headline = (f"{len(high_priority)} jugador(es) requieren revisión prioritaria antes de "
+                    "decidir la carga de la siguiente sesión.")
+        recommendation = ("Antes de la próxima exposición intensa, revisar RPE, bienestar y molestias; "
+                          "si la señal se confirma, individualizar el volumen o la intensidad.")
+        color = ROJO
+    else:
+        headline = (f"{len(monitor)} jugador(es) presentan una señal de carga a vigilar "
+                    "en la próxima planificación.")
+        recommendation = ("Confirmar el contexto de la sesión y el bienestar del jugador antes de "
+                          "aumentar de nuevo la carga.")
+        color = DORADO
+
+    st.markdown(f"""
+    <div style="background:{AZUL_MEDIO};border-left:4px solid {color};border-radius:8px;
+                padding:14px 16px;margin-bottom:10px;color:{BLANCO};font-size:0.92rem;">
+        <b>{headline}</b><br>
+        <span style="color:{GRIS_MEDIO};font-size:0.8rem;line-height:1.45;">
+        Señal automática: una o más métricas superan en ≥30% la media de las tres sesiones previas
+        del propio jugador. <b>Recomendación:</b> {recommendation}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not alerts.empty:
+        display = alerts.rename(columns={
+            "jugador": "Jugador", "nivel": "Acción", "senales": "Señales", "motivo": "Motivo"
+        })[["Jugador", "Acción", "Señales", "Motivo"]]
+        st.dataframe(display, use_container_width=True, hide_index=True)
+
+    st.caption(
+        "Estas alertas apoyan la decisión del cuerpo técnico. No diagnostican ni predicen lesiones: "
+        "contrástalas con RPE, bienestar, dolor, sueño, contexto de la sesión e historial clínico."
+    )
+
+
 def page_fisica():
     st.markdown(f"""
     <h1 style="color:{BLANCO};font-size:2rem;font-weight:700;margin-bottom:2px;">
@@ -1828,6 +1927,8 @@ def page_fisica():
             _acceleration_risk_chart(df_sesion)
         with tab_comparativa:
             _player_comparison_chart(df_sesion, metrica_col, metrica_label)
+
+        _workload_conclusion(df, df_sesion, fecha_label)
 
         section("Tabla de sesión")
         df_t = df_sesion[["jugador","distancia","vel_max","carga","accel_max","hsr_dist","hsr_count"]].copy()
