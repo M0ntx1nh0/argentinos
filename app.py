@@ -1615,6 +1615,115 @@ def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
     fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
     chart(fig)
 
+
+def _session_summary_cards(df_sesion):
+    """KPIs operativos que acompañan las vistas de carga de una sesión."""
+    distancia_total = df_sesion["distancia"].sum()
+    carga_media = df_sesion["carga"].mean()
+    vel_media = df_sesion["vel_max"].mean()
+    sobrecarga = int((df_sesion["carga"] >= 200).sum())
+    jugadores = len(df_sesion.dropna(subset=["jugador"]))
+
+    for col, (label, value, suffix) in zip(st.columns(4), [
+        ("Distancia total equipo", _fmt(distancia_total, "distancia"), " km"),
+        ("GPS Load promedio", _fmt(carga_media, "carga"), ""),
+        ("Velocidad máxima media", _fmt(vel_media, "vel_max"), " km/h"),
+        ("Jugadores en sobrecarga", str(sobrecarga), f" de {jugadores}"),
+    ]):
+        with col:
+            st.markdown(metric_card(label, value, suffix), unsafe_allow_html=True)
+
+
+def _load_chart(df_sesion):
+    data = df_sesion.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
+    colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in data["carga"]]
+    fig = go.Figure(go.Bar(
+        x=data["jugador"], y=data["carga"],
+        marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
+        text=[_fmt(value, "carga") for value in data["carga"]],
+        textposition="outside", textfont=dict(color=BLANCO, size=10),
+        customdata=data[["distancia", "vel_max"]],
+        hovertemplate=("<b>%{x}</b><br>GPS Load: %{y:.1f}<br>"
+                       "Distancia: %{customdata[0]:.2f} km<br>"
+                       "Vel. máxima: %{customdata[1]:.1f} km/h<extra></extra>"),
+    ))
+    fig.add_hline(y=160, line_dash="dot", line_color=DORADO, line_width=1.5)
+    fig.add_hline(y=200, line_dash="dot", line_color=ROJO, line_width=1.5)
+    t(fig, height=440, margin=dict(t=36, b=110, l=52, r=36))
+    fig.update_layout(
+        title=dict(text="Carga individual · umbrales de referencia", font=dict(color=GRIS_MEDIO, size=13)),
+        showlegend=False,
+        annotations=[
+            dict(xref="paper", yref="paper", x=0.01, y=1.14, showarrow=False,
+                 text="<span style='color:#E85D75'>■</span> ≥ 200 sobrecarga &nbsp;&nbsp; "
+                      "<span style='color:#C9A84C'>■</span> 160–199 alta carga &nbsp;&nbsp; "
+                      "<span style='color:#6AAFE6'>■</span> &lt; 160 normal",
+                 font=dict(color=GRIS_MEDIO, size=12), align="left"),
+        ],
+    )
+    fig.update_xaxes(tickangle=-45, title_text="")
+    fig.update_yaxes(title_text="GPS Load", rangemode="tozero")
+    chart(fig)
+
+
+def _distance_intensity_chart(df_sesion):
+    data = df_sesion.dropna(subset=["jugador", "distancia", "hsr_dist"])
+    fig = go.Figure(go.Scatter(
+        x=data["distancia"], y=data["hsr_dist"], mode="markers",
+        marker=dict(size=15, color=AZUL_CELESTE, opacity=0.9,
+                    line=dict(color=DORADO, width=1)),
+        customdata=data[["jugador", "carga", "vel_max"]],
+        hovertemplate=("<b>%{customdata[0]}</b><br>Distancia: %{x:.2f} km<br>"
+                       "HSR: %{y:.2f} km<br>GPS Load: %{customdata[1]:.1f}<br>"
+                       "Vel. máxima: %{customdata[2]:.1f} km/h<extra></extra>"),
+    ))
+    t(fig, height=440)
+    fig.update_layout(title=dict(
+        text="Perfil de esfuerzo individual", font=dict(color=GRIS_MEDIO, size=13)
+    ), showlegend=False)
+    fig.update_xaxes(title_text="Distancia total (km)", rangemode="tozero")
+    fig.update_yaxes(title_text="Distancia a alta intensidad (km)", rangemode="tozero")
+    chart(fig)
+
+
+def _acceleration_risk_chart(df_sesion):
+    data = df_sesion.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
+    top_risk = set(data.head(3)["jugador"])
+    colors = [ROJO if player in top_risk else AZUL_CELESTE for player in data["jugador"]]
+    fig = go.Figure(go.Bar(
+        x=data["jugador"], y=data["accel_count"],
+        marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
+        text=[_fmt(value, "accel_count") for value in data["accel_count"]],
+        textposition="outside", textfont=dict(color=BLANCO, size=10),
+        customdata=data[["distancia", "carga"]],
+        hovertemplate=("<b>%{x}</b><br>Aceleraciones: %{y:.0f}<br>"
+                       "Distancia: %{customdata[0]:.2f} km<br>"
+                       "GPS Load: %{customdata[1]:.1f}<extra></extra>"),
+    ))
+    t(fig, height=440, margin=dict(t=36, b=110, l=52, r=36))
+    fig.update_layout(
+        title=dict(text="Top 3 · mayor volumen de aceleraciones", font=dict(color=GRIS_MEDIO, size=13)),
+        showlegend=False,
+    )
+    fig.update_xaxes(tickangle=-45, title_text="")
+    fig.update_yaxes(title_text="Aceleraciones", rangemode="tozero")
+    chart(fig)
+
+
+def _player_comparison_chart(df_sesion, metrica_col, metrica_label):
+    data = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
+    fig = go.Figure(go.Bar(
+        x=data[metrica_col], y=data["jugador"], orientation="h",
+        marker=dict(color=AZUL_CELESTE, opacity=0.9,
+                    line=dict(color="rgba(0,0,0,0.2)", width=1)),
+        text=[_fmt(value, metrica_col) for value in data[metrica_col]],
+        textposition="outside", textfont=dict(color=BLANCO, size=11),
+    ))
+    t(fig, height=max(300, len(data) * 38))
+    fig.update_layout(showlegend=False)
+    chart(fig)
+
+
 def page_fisica():
     st.markdown(f"""
     <h1 style="color:{BLANCO};font-size:2rem;font-weight:700;margin-bottom:2px;">
@@ -1667,21 +1776,20 @@ def page_fisica():
         )
         _evo_chart(df_evo_eq, metrica_col, metrica_label, f"Media del equipo · {metrica_label}")
 
-        section(f"Comparativa jugadores · {metrica_label} — {fecha_label}")
-        df_comp = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
-        if df_comp.empty:
-            st.info("Sin datos para esta sesión.")
-        else:
-            fig_comp = go.Figure(go.Bar(
-                x=df_comp[metrica_col], y=df_comp["jugador"],
-                orientation="h",
-                marker=dict(color=AZUL_CELESTE, opacity=0.9,
-                            line=dict(color="rgba(0,0,0,0.2)", width=1)),
-                text=[_fmt(v, metrica_col) for v in df_comp[metrica_col]],
-                textposition="outside", textfont=dict(color=BLANCO, size=11),
-            ))
-            t(fig_comp, height=max(300, len(df_comp) * 38))
-            chart(fig_comp)
+        section(f"Análisis de sesión · {fecha_label}")
+        tab_carga, tab_intensidad, tab_riesgo, tab_comparativa = st.tabs([
+            "Carga GPS", "Distancia vs intensidad", "Riesgo (aceleraciones)", "Comparativa jugadores"
+        ])
+        with tab_carga:
+            _session_summary_cards(df_sesion)
+            st.markdown("<br>", unsafe_allow_html=True)
+            _load_chart(df_sesion)
+        with tab_intensidad:
+            _distance_intensity_chart(df_sesion)
+        with tab_riesgo:
+            _acceleration_risk_chart(df_sesion)
+        with tab_comparativa:
+            _player_comparison_chart(df_sesion, metrica_col, metrica_label)
 
         section("Tabla de sesión")
         df_t = df_sesion[["jugador","distancia","vel_max","carga","accel_max","hsr_dist","hsr_count"]].copy()
