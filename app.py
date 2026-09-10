@@ -7,6 +7,8 @@ import base64
 import io
 import json
 import os
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -14,6 +16,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from dotenv import load_dotenv
+from fpdf import FPDF
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
@@ -1601,7 +1604,7 @@ def _kpis_equipo(df_sesion):
                 unsafe_allow_html=True,
             )
 
-def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
+def _evo_chart(df_evo, metrica_col, metrica_label, titulo, render=True):
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_evo["fecha_str"], y=df_evo[metrica_col],
@@ -1617,7 +1620,9 @@ def _evo_chart(df_evo, metrica_col, metrica_label, titulo):
                   annotation_position="top left")
     t(fig, height=360)
     fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
-    chart(fig)
+    if render:
+        chart(fig)
+    return fig
 
 
 def _quartile_colors(values: pd.Series) -> list[str]:
@@ -1672,12 +1677,13 @@ def _session_summary_cards(df_sesion):
             st.markdown(metric_card(label, value, suffix), unsafe_allow_html=True)
 
 
-def _load_chart(df_sesion):
+def _load_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
     colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in data["carga"]]
-    st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
-                "Carga individual · umbrales de referencia</div>", unsafe_allow_html=True)
-    _load_threshold_legend()
+    if render:
+        st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
+                    "Carga individual · umbrales de referencia</div>", unsafe_allow_html=True)
+        _load_threshold_legend()
     fig = go.Figure(go.Bar(
         x=data["jugador"], y=data["carga"],
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0.18)", width=1)),
@@ -1696,10 +1702,12 @@ def _load_chart(df_sesion):
     )
     fig.update_xaxes(tickangle=-45, title_text="")
     fig.update_yaxes(title_text="GPS Load", rangemode="tozero")
-    chart(fig)
+    if render:
+        chart(fig)
+    return fig
 
 
-def _distance_intensity_chart(df_sesion):
+def _distance_intensity_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "distancia", "hsr_dist"])
     fig = go.Figure(go.Scatter(
         x=data["distancia"], y=data["hsr_dist"], mode="markers+text",
@@ -1718,10 +1726,12 @@ def _distance_intensity_chart(df_sesion):
     ), showlegend=False)
     fig.update_xaxes(title_text="Distancia total (km)", rangemode="tozero")
     fig.update_yaxes(title_text="Distancia a alta intensidad (km)", rangemode="tozero")
-    chart(fig)
+    if render:
+        chart(fig)
+    return fig
 
 
-def _acceleration_risk_chart(df_sesion):
+def _acceleration_risk_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
     top_risk = set(data.head(3)["jugador"])
     colors = [ROJO if player in top_risk else AZUL_CELESTE for player in data["jugador"]]
@@ -1742,13 +1752,16 @@ def _acceleration_risk_chart(df_sesion):
     )
     fig.update_xaxes(tickangle=-45, title_text="")
     fig.update_yaxes(title_text="Aceleraciones", rangemode="tozero")
-    chart(fig)
+    if render:
+        chart(fig)
+    return fig
 
 
-def _player_comparison_chart(df_sesion, metrica_col, metrica_label):
+def _player_comparison_chart(df_sesion, metrica_col, metrica_label, render=True):
     data = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
     colors = _quartile_colors(data[metrica_col])
-    _quartile_legend()
+    if render:
+        _quartile_legend()
     metric_title, _, _ = METRICAS_INFO[metrica_col]
     fig = go.Figure(go.Bar(
         x=data[metrica_col], y=data["jugador"], orientation="h",
@@ -1763,7 +1776,9 @@ def _player_comparison_chart(df_sesion, metrica_col, metrica_label):
         showlegend=False,
     )
     fig.update_xaxes(title_text=metric_title)
-    chart(fig)
+    if render:
+        chart(fig)
+    return fig
 
 
 def _workload_alerts(df, fecha_sesion: pd.Timestamp) -> pd.DataFrame:
@@ -1862,6 +1877,225 @@ def _workload_conclusion(df, df_sesion, fecha_label: str):
     )
 
 
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    value = hex_color.lstrip("#")
+    return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+
+
+class _GPSReportPDF(FPDF):
+    def __init__(self, club_logo: str, sdc_logo: str):
+        super().__init__(orientation="L", unit="mm", format="A4")
+        self.club_logo = club_logo
+        self.sdc_logo = sdc_logo
+        self.set_auto_page_break(auto=True, margin=15)
+        self.set_title("Informe de GPS - Club Argentino")
+
+    def header(self):
+        # The header is drawn explicitly by _pdf_heading on internal pages.
+        return
+
+    def footer(self):
+        if self.page_no() == 1:
+            return
+        self.set_y(-10)
+        self.set_font("Helvetica", "", 8)
+        self.set_text_color(90, 101, 118)
+        self.cell(0, 5, f"Club Argentino | Informe GPS | Pagina {self.page_no()}", align="C")
+
+
+def _pdf_heading(pdf: _GPSReportPDF, title: str, subtitle: str = ""):
+    pdf.image(pdf.club_logo, x=12, y=7, h=10)
+    pdf.image(pdf.sdc_logo, x=272, y=7, h=10)
+    pdf.set_xy(50, 8)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_rgb(AZUL_OSCURO))
+    pdf.cell(197, 8, "INFORME DE GPS", align="C")
+    pdf.set_draw_color(*_rgb(AZUL_MEDIO))
+    pdf.set_line_width(0.8)
+    pdf.line(12, 21, 285, 21)
+    pdf.set_y(29)
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(*_rgb(AZUL_OSCURO))
+    pdf.cell(0, 8, title)
+    if subtitle:
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(*_rgb(AZUL_CLARO))
+        pdf.ln(8)
+        pdf.cell(0, 6, subtitle)
+    pdf.ln(10)
+
+
+def _pdf_card(pdf: _GPSReportPDF, x: float, y: float, width: float, label: str, value: str, suffix: str = ""):
+    pdf.set_fill_color(241, 245, 249)
+    pdf.rect(x, y, width, 28, style="F")
+    pdf.set_xy(x + 5, y + 5)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(71, 85, 105)
+    pdf.cell(width - 10, 5, label.upper())
+    pdf.set_xy(x + 5, y + 12)
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(*_rgb(AZUL_OSCURO))
+    pdf.cell(width - 10, 8, value)
+    if suffix:
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(100, 116, 139)
+        pdf.cell(25, 8, suffix)
+
+
+def _pdf_add_figure_page(pdf: _GPSReportPDF, title: str, subtitle: str, figure: go.Figure, image_path: Path):
+    pdf.add_page()
+    _pdf_heading(pdf, title, subtitle)
+    figure.write_image(str(image_path), format="png", width=1800, height=1000, scale=2)
+    pdf.image(str(image_path), x=14, y=48, w=269, h=149)
+
+
+def _build_gps_report_pdf(df, df_sesion, fecha_label: str, metrica_col: str, metrica_label: str) -> bytes:
+    """Genera el informe del Equipo en A4 horizontal y lo devuelve listo para descargar."""
+    club_logo = os.path.join(ASSETS, "logo_argentino.png")
+    sdc_logo = os.path.join(ASSETS, "sport data campus.png")
+    pdf = _GPSReportPDF(club_logo, sdc_logo)
+    date_range = f"{df['fecha'].min():%d/%m/%Y} - {df['fecha'].max():%d/%m/%Y}"
+    print_date = datetime.now().strftime("%d/%m/%Y")
+
+    # Portada
+    pdf.add_page()
+    pdf.set_fill_color(*_rgb(AZUL_OSCURO))
+    pdf.rect(0, 0, 297, 210, style="F")
+    pdf.image(club_logo, x=76, y=45, w=42)
+    pdf.image(sdc_logo, x=179, y=45, w=42)
+    pdf.set_y(101)
+    pdf.set_font("Helvetica", "B", 29)
+    pdf.set_text_color(*_rgb(BLANCO))
+    pdf.cell(0, 14, "INFORME DE GPS", align="C")
+    pdf.set_draw_color(*_rgb(DORADO))
+    pdf.set_line_width(1.1)
+    pdf.line(95, 120, 202, 120)
+    pdf.set_y(130)
+    pdf.set_font("Helvetica", "", 13)
+    pdf.set_text_color(*_rgb(AZUL_CELESTE))
+    pdf.cell(0, 8, "Club Argentino", align="C")
+    pdf.set_y(151)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(*_rgb(GRIS_MEDIO))
+    pdf.cell(0, 6, f"Rango de datos: {date_range}", align="C")
+    pdf.ln(6)
+    pdf.cell(0, 6, f"Fecha de emision: {print_date}", align="C")
+
+    # Indice
+    pdf.add_page()
+    _pdf_heading(pdf, "Indice", "Contenido del informe")
+    sections = [
+        "1. Resumen del equipo y evolucion",
+        "2. Carga GPS",
+        "3. Distancia vs intensidad",
+        "4. Riesgo por aceleraciones",
+        "5. Comparativa de jugadores",
+        "6. Conclusion automatica de carga",
+    ]
+    for section_title in sections:
+        pdf.set_font("Helvetica", "", 13)
+        pdf.set_text_color(*_rgb(AZUL_OSCURO))
+        pdf.set_fill_color(241, 245, 249)
+        pdf.set_x(16)
+        pdf.cell(265, 11, section_title, fill=True)
+        pdf.set_y(pdf.get_y() + 15)
+
+    # Resumen del equipo y evolucion
+    pdf.add_page()
+    _pdf_heading(pdf, "Resumen del equipo", f"Sesion analizada: {fecha_label}")
+    distancia_total = df_sesion["distancia"].sum()
+    carga_media = df_sesion["carga"].mean()
+    vel_media = df_sesion["vel_max"].mean()
+    sobrecarga = int((df_sesion["carga"] >= 200).sum())
+    jugadores = len(df_sesion.dropna(subset=["jugador"]))
+    card_width = 61
+    for index, card in enumerate([
+        ("Distancia total equipo", _fmt(distancia_total, "distancia"), "km"),
+        ("GPS Load promedio", _fmt(carga_media, "carga"), ""),
+        ("Velocidad maxima media", _fmt(vel_media, "vel_max"), "km/h"),
+        ("Jugadores en sobrecarga", str(sobrecarga), f"de {jugadores}"),
+    ]):
+        _pdf_card(pdf, 15 + index * 67, 48, card_width, *card)
+    df_evo_eq = df.groupby(["fecha_str", "fecha"])[metrica_col].mean().reset_index().sort_values("fecha")
+    evo_fig = _evo_chart(df_evo_eq, metrica_col, metrica_label, f"Media del equipo - {metrica_label}", render=False)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        evo_path = temp_path / "evolucion.png"
+        evo_fig.write_image(str(evo_path), format="png", width=1800, height=800, scale=2)
+        pdf.image(str(evo_path), x=14, y=86, w=269, h=108)
+
+        _pdf_add_figure_page(pdf, "Carga GPS", f"Sesion: {fecha_label}", _load_chart(df_sesion, render=False), temp_path / "carga.png")
+        _pdf_add_figure_page(pdf, "Distancia vs intensidad", f"Sesion: {fecha_label}", _distance_intensity_chart(df_sesion, render=False), temp_path / "intensidad.png")
+        _pdf_add_figure_page(pdf, "Riesgo por aceleraciones", f"Sesion: {fecha_label}", _acceleration_risk_chart(df_sesion, render=False), temp_path / "riesgo.png")
+        _pdf_add_figure_page(
+            pdf, "Comparativa de jugadores", f"Sesion: {fecha_label}",
+            _player_comparison_chart(df_sesion, metrica_col, metrica_label, render=False),
+            temp_path / "comparativa.png",
+        )
+
+    # Conclusion
+    pdf.add_page()
+    _pdf_heading(pdf, "Conclusion automatica de carga", f"Sesion analizada: {fecha_label}")
+    alerts = _workload_alerts(df, df_sesion["fecha"].iloc[0])
+    if alerts.empty:
+        conclusion = "No se detectan picos relativos de carga en los jugadores con historial suficiente."
+        color = VERDE
+    else:
+        priority = alerts[alerts["nivel"] == "Prioridad alta"]
+        conclusion = (
+            f"{len(priority)} jugador(es) requieren revision prioritaria y "
+            f"{len(alerts) - len(priority)} jugador(es) deben mantenerse en seguimiento."
+        )
+        color = ROJO if not priority.empty else DORADO
+    pdf.set_fill_color(*_rgb(AZUL_MEDIO))
+    pdf.rect(15, 48, 267, 25, style="F")
+    pdf.set_draw_color(*_rgb(color))
+    pdf.set_line_width(1.2)
+    pdf.line(15, 48, 15, 73)
+    pdf.set_xy(22, 54)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_text_color(*_rgb(BLANCO))
+    pdf.multi_cell(252, 6, conclusion)
+    pdf.set_xy(16, 83)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(*_rgb(AZUL_OSCURO))
+    pdf.multi_cell(
+        266, 6,
+        "Regla: cada senal aparece cuando GPS Load, HSR o aceleraciones superan en >=30% la media "
+        "de las tres sesiones previas del propio jugador. Una senal implica Vigilar; dos o mas, Prioridad alta.",
+    )
+    if not alerts.empty:
+        y = 110
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(*_rgb(BLANCO))
+        pdf.set_fill_color(*_rgb(AZUL_MEDIO))
+        for x, width, label in [(16, 56, "Jugador"), (72, 42, "Accion"), (114, 18, "Senales"), (132, 149, "Motivo")]:
+            pdf.set_xy(x, y)
+            pdf.cell(width, 8, label, fill=True)
+        y += 8
+        for _, alert in alerts.iterrows():
+            pdf.set_fill_color(241, 245, 249)
+            pdf.set_text_color(*_rgb(AZUL_OSCURO))
+            pdf.set_font("Helvetica", "", 9)
+            for x, width, value in [
+                (16, 56, str(alert["jugador"])), (72, 42, str(alert["nivel"])),
+                (114, 18, str(alert["senales"])), (132, 149, str(alert["motivo"])),
+            ]:
+                pdf.set_xy(x, y)
+                pdf.cell(width, 9, value, fill=True)
+            y += 9
+    pdf.set_xy(16, 170)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(90, 101, 118)
+    pdf.multi_cell(
+        266, 5,
+        "Estas alertas apoyan la decision del cuerpo tecnico. No diagnostican ni predicen lesiones: "
+        "deben contrastarse con RPE, bienestar, dolor, sueno, contexto de sesion e historial clinico.",
+    )
+    return bytes(pdf.output())
+
+
 def page_fisica():
     st.markdown(f"""
     <h1 style="color:{BLANCO};font-size:2rem;font-weight:700;margin-bottom:2px;">
@@ -1905,6 +2139,23 @@ def page_fisica():
     with tab_equipo:
         section(f"Resumen del equipo · {fecha_label}")
         _kpis_equipo(df_sesion)
+
+        pdf_col, _ = st.columns([1, 4])
+        with pdf_col:
+            if st.button("Generar informe PDF", key="gps_pdf_generate", use_container_width=True):
+                with st.spinner("Generando informe PDF..."):
+                    st.session_state["gps_pdf_bytes"] = _build_gps_report_pdf(
+                        df, df_sesion, fecha_label, metrica_col, metrica_label
+                    )
+                    st.session_state["gps_pdf_name"] = f"Informe_GPS_{fecha_label.replace('/', '-')}.pdf"
+        if st.session_state.get("gps_pdf_bytes"):
+            st.download_button(
+                "Descargar informe PDF",
+                data=st.session_state["gps_pdf_bytes"],
+                file_name=st.session_state["gps_pdf_name"],
+                mime="application/pdf",
+                key="gps_pdf_download",
+            )
 
         st.markdown("<br>", unsafe_allow_html=True)
         section(f"Evolución del equipo · {metrica_label}")
