@@ -15,6 +15,7 @@ import requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 from dotenv import load_dotenv
 from fpdf import FPDF
 from google.auth.transport.requests import Request
@@ -1949,6 +1950,16 @@ def _pdf_add_figure_page(pdf: _GPSReportPDF, title: str, subtitle: str, figure: 
     pdf.image(str(image_path), x=14, y=48, w=269, h=149)
 
 
+@st.cache_resource(show_spinner=False)
+def _ensure_pdf_browser() -> str:
+    """Descarga Chrome una sola vez en Cloud para que Kaleido pueda exportar gráficos."""
+    chrome_cache = Path(tempfile.gettempdir()) / "club_argentino_chrome"
+    chrome_cache.mkdir(parents=True, exist_ok=True)
+    chrome_path = pio.get_chrome(path=chrome_cache)
+    os.environ["BROWSER_PATH"] = str(chrome_path)
+    return str(chrome_path)
+
+
 def _build_gps_report_pdf(df, df_sesion, fecha_label: str, metrica_col: str, metrica_label: str) -> bytes:
     """Genera el informe del Equipo en A4 horizontal y lo devuelve listo para descargar."""
     club_logo = os.path.join(ASSETS, "logo_argentino.png")
@@ -2142,12 +2153,21 @@ def page_fisica():
 
         pdf_col, _ = st.columns([1, 4])
         with pdf_col:
-            if st.button("Generar informe PDF", key="gps_pdf_generate", use_container_width=True):
+            if st.button(
+                "Generar informe PDF", key="gps_pdf_generate", type="primary", use_container_width=True
+            ):
                 with st.spinner("Generando informe PDF..."):
-                    st.session_state["gps_pdf_bytes"] = _build_gps_report_pdf(
-                        df, df_sesion, fecha_label, metrica_col, metrica_label
-                    )
-                    st.session_state["gps_pdf_name"] = f"Informe_GPS_{fecha_label.replace('/', '-')}.pdf"
+                    try:
+                        _ensure_pdf_browser()
+                        st.session_state["gps_pdf_bytes"] = _build_gps_report_pdf(
+                            df, df_sesion, fecha_label, metrica_col, metrica_label
+                        )
+                        st.session_state["gps_pdf_name"] = f"Informe_GPS_{fecha_label.replace('/', '-')}.pdf"
+                    except Exception:
+                        st.error(
+                            "No se ha podido preparar el motor de exportación. "
+                            "Espera unos segundos y vuelve a intentarlo."
+                        )
         if st.session_state.get("gps_pdf_bytes"):
             st.download_button(
                 "Descargar informe PDF",
@@ -2401,6 +2421,23 @@ def inject_css():
         transition: all 0.18s ease;
         box-shadow: none;
         letter-spacing: 0.01em;
+    }}
+
+    /* Acción principal: exportar el informe GPS */
+    button[kind="primary"] {{
+        background: linear-gradient(135deg, {DORADO} 0%, #af8730 100%) !important;
+        color: {AZUL_OSCURO} !important;
+        border: 1px solid #e4c46c !important;
+        border-radius: 9px !important;
+        font-weight: 800 !important;
+        box-shadow: 0 5px 14px rgba(0, 0, 0, 0.24) !important;
+        transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+    }}
+    button[kind="primary"]:hover {{
+        background: linear-gradient(135deg, #dfbf63 0%, {DORADO} 100%) !important;
+        color: {AZUL_OSCURO} !important;
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.30) !important;
     }}
 
     /* Estado INACTIVO */
