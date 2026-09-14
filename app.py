@@ -7,7 +7,6 @@ import base64
 import io
 import json
 import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +14,6 @@ import requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.io as pio
 from dotenv import load_dotenv
 from fpdf import FPDF
 from google.auth.transport.requests import Request
@@ -1943,21 +1941,156 @@ def _pdf_card(pdf: _GPSReportPDF, x: float, y: float, width: float, label: str, 
         pdf.cell(25, 8, suffix)
 
 
-def _pdf_add_figure_page(pdf: _GPSReportPDF, title: str, subtitle: str, figure: go.Figure, image_path: Path):
+def _pdf_short_name(name: str, max_length: int = 11) -> str:
+    """Evita que los nombres largos invadan los gráficos estáticos del informe."""
+    first_name = str(name).split()[0]
+    return first_name if len(first_name) <= max_length else f"{first_name[:max_length - 1]}."
+
+
+def _pdf_chart_canvas(pdf: _GPSReportPDF, x: float, y: float, width: float, height: float, title: str):
+    pdf.set_fill_color(*_rgb(PAPER_BG))
+    pdf.rect(x, y, width, height, style="F")
+    pdf.set_draw_color(*_rgb(AZUL_CLARO))
+    pdf.rect(x, y, width, height)
+    pdf.set_text_color(*_rgb(BLANCO))
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_xy(x + 6, y + 4)
+    pdf.cell(width - 12, 5, title, align="C")
+    return x + 24, y + 16, width - 31, height - 29
+
+
+def _pdf_vertical_bars(
+    pdf: _GPSReportPDF, data: pd.DataFrame, value_col: str, x: float, y: float, width: float,
+    height: float, title: str, y_label: str, colors: list[str], show_values: bool = True,
+):
+    left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, x, y, width, height, title)
+    values = pd.to_numeric(data[value_col], errors="coerce").fillna(0).tolist()
+    if not values:
+        return
+    max_value = max(values) or 1
+    max_axis = max_value * 1.15
+    pdf.set_font("Helvetica", "", 6)
+    for index in range(5):
+        value = max_axis * index / 4
+        line_y = top + plot_height - (plot_height * index / 4)
+        pdf.set_draw_color(74, 103, 148)
+        pdf.line(left, line_y, left + plot_width, line_y)
+        pdf.set_text_color(*_rgb(GRIS_MEDIO))
+        pdf.set_xy(x + 2, line_y - 2)
+        pdf.cell(19, 4, f"{value:.0f}", align="R")
+    pdf.set_draw_color(*_rgb(GRIS_MEDIO))
+    pdf.line(left, top, left, top + plot_height)
+    pdf.line(left, top + plot_height, left + plot_width, top + plot_height)
+    bar_slot = plot_width / len(values)
+    bar_width = min(10, bar_slot * 0.7)
+    for index, (_, row) in enumerate(data.reset_index(drop=True).iterrows()):
+        value = max(float(row[value_col]), 0)
+        bar_height = (value / max_axis) * plot_height
+        bar_x = left + index * bar_slot + (bar_slot - bar_width) / 2
+        bar_y = top + plot_height - bar_height
+        pdf.set_fill_color(*_rgb(colors[index]))
+        pdf.rect(bar_x, bar_y, bar_width, bar_height, style="F")
+        if show_values:
+            pdf.set_text_color(*_rgb(BLANCO))
+            pdf.set_font("Helvetica", "B", 5.5)
+            pdf.set_xy(bar_x - 4, bar_y - 4)
+            pdf.cell(bar_width + 8, 3, f"{value:.1f}", align="C")
+        pdf.set_text_color(*_rgb(GRIS_MEDIO))
+        pdf.set_font("Helvetica", "", 5.5)
+        pdf.set_xy(bar_x - 3, top + plot_height + 2)
+        pdf.cell(bar_width + 6, 4, _pdf_short_name(row["jugador"]), align="C")
+    pdf.set_font("Helvetica", "", 6)
+    pdf.set_text_color(*_rgb(GRIS_MEDIO))
+    pdf.set_xy(x + 2, top + plot_height / 2 - 2)
+    pdf.cell(18, 4, y_label, align="C")
+
+
+def _pdf_draw_evolution_chart(pdf: _GPSReportPDF, data: pd.DataFrame, value_col: str, label: str):
+    plot = data.rename(columns={"fecha_str": "jugador"})
+    _pdf_vertical_bars(
+        pdf, plot, value_col, 14, 86, 269, 108, f"Media del equipo - {label}", label,
+        [AZUL_CELESTE] * len(plot),
+    )
+
+
+def _pdf_draw_load_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
+    plot = data.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
+    colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in plot["carga"]]
+    _pdf_vertical_bars(pdf, plot, "carga", 14, 48, 269, 149, "Carga individual - umbrales de referencia", "GPS Load", colors)
+
+
+def _pdf_draw_acceleration_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
+    plot = data.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
+    top_risk = set(plot.head(3)["jugador"])
+    colors = [ROJO if player in top_risk else AZUL_CELESTE for player in plot["jugador"]]
+    _pdf_vertical_bars(pdf, plot, "accel_count", 14, 48, 269, 149, "Top 3 - mayor volumen de aceleraciones", "Aceleraciones", colors)
+
+
+def _pdf_draw_intensity_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
+    plot = data.dropna(subset=["jugador", "distancia", "hsr_dist"])
+    left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, 14, 48, 269, 149, "Perfil de esfuerzo individual")
+    max_x = max(float(plot["distancia"].max()), 1) * 1.08
+    max_y = max(float(plot["hsr_dist"].max()), 1) * 1.12
+    pdf.set_font("Helvetica", "", 6)
+    for index in range(5):
+        grid_x = left + plot_width * index / 4
+        grid_y = top + plot_height - plot_height * index / 4
+        pdf.set_draw_color(74, 103, 148)
+        pdf.line(grid_x, top, grid_x, top + plot_height)
+        pdf.line(left, grid_y, left + plot_width, grid_y)
+        pdf.set_text_color(*_rgb(GRIS_MEDIO))
+        pdf.set_xy(grid_x - 5, top + plot_height + 2)
+        pdf.cell(10, 3, f"{max_x * index / 4:.1f}", align="C")
+        pdf.set_xy(15, grid_y - 2)
+        pdf.cell(16, 3, f"{max_y * index / 4:.1f}", align="R")
+    for _, row in plot.iterrows():
+        point_x = left + (float(row["distancia"]) / max_x) * plot_width
+        point_y = top + plot_height - (float(row["hsr_dist"]) / max_y) * plot_height
+        pdf.set_fill_color(*_rgb(AZUL_CELESTE))
+        pdf.ellipse(point_x - 1.7, point_y - 1.7, 3.4, 3.4, style="F")
+        pdf.set_text_color(*_rgb(BLANCO))
+        pdf.set_font("Helvetica", "", 5.5)
+        pdf.set_xy(point_x + 2, point_y - 3)
+        pdf.cell(28, 3, _pdf_short_name(row["jugador"]))
+    pdf.set_text_color(*_rgb(GRIS_MEDIO))
+    pdf.set_font("Helvetica", "", 6)
+    pdf.set_xy(left + plot_width / 2 - 20, top + plot_height + 7)
+    pdf.cell(40, 3, "Distancia total (km)", align="C")
+    pdf.set_xy(2, top + plot_height / 2 - 2)
+    pdf.cell(23, 3, "HSR (km)", align="C")
+
+
+def _pdf_draw_comparison_chart(pdf: _GPSReportPDF, data: pd.DataFrame, metric_col: str, metric_label: str):
+    plot = data.dropna(subset=["jugador", metric_col]).sort_values(metric_col, ascending=False).reset_index(drop=True)
+    left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, 14, 48, 269, 149, f"{metric_label} por jugador")
+    label_width = 37
+    max_value = max(float(plot[metric_col].max()), 1) * 1.1
+    row_height = plot_height / max(len(plot), 1)
+    colors = list(reversed(_quartile_colors(plot[metric_col])))
+    for index, (_, row) in enumerate(plot.iterrows()):
+        value = max(float(row[metric_col]), 0)
+        bar_y = top + index * row_height + 1
+        bar_width = (value / max_value) * (plot_width - label_width)
+        pdf.set_text_color(*_rgb(GRIS_MEDIO))
+        pdf.set_font("Helvetica", "", 5.8)
+        pdf.set_xy(left - label_width, bar_y + 1)
+        pdf.cell(label_width - 2, 3, _pdf_short_name(row["jugador"], 16), align="R")
+        pdf.set_fill_color(*_rgb(colors[index]))
+        pdf.rect(left, bar_y, bar_width, max(row_height - 2, 1), style="F")
+        pdf.set_text_color(*_rgb(BLANCO))
+        pdf.set_font("Helvetica", "B", 5.8)
+        pdf.set_xy(left + bar_width + 1, bar_y + 1)
+        pdf.cell(12, 3, f"{value:.2f}")
+    pdf.set_text_color(*_rgb(GRIS_MEDIO))
+    pdf.set_font("Helvetica", "", 6)
+    pdf.set_xy(left, top + plot_height + 4)
+    pdf.cell(plot_width, 3, metric_label, align="C")
+
+
+def _pdf_add_chart_page(pdf: _GPSReportPDF, title: str, subtitle: str, draw_chart, *args):
     pdf.add_page()
     _pdf_heading(pdf, title, subtitle)
-    figure.write_image(str(image_path), format="png", width=1800, height=1000, scale=2)
-    pdf.image(str(image_path), x=14, y=48, w=269, h=149)
-
-
-@st.cache_resource(show_spinner=False)
-def _ensure_pdf_browser() -> str:
-    """Descarga Chrome una sola vez en Cloud para que Kaleido pueda exportar gráficos."""
-    chrome_cache = Path(tempfile.gettempdir()) / "club_argentino_chrome"
-    chrome_cache.mkdir(parents=True, exist_ok=True)
-    chrome_path = pio.get_chrome(path=chrome_cache)
-    os.environ["BROWSER_PATH"] = str(chrome_path)
-    return str(chrome_path)
+    draw_chart(pdf, *args)
 
 
 def _build_gps_report_pdf(df, df_sesion, fecha_label: str, metrica_col: str, metrica_label: str) -> bytes:
@@ -2028,22 +2161,14 @@ def _build_gps_report_pdf(df, df_sesion, fecha_label: str, metrica_col: str, met
     ]):
         _pdf_card(pdf, 15 + index * 67, 48, card_width, *card)
     df_evo_eq = df.groupby(["fecha_str", "fecha"])[metrica_col].mean().reset_index().sort_values("fecha")
-    evo_fig = _evo_chart(df_evo_eq, metrica_col, metrica_label, f"Media del equipo - {metrica_label}", render=False)
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        evo_path = temp_path / "evolucion.png"
-        evo_fig.write_image(str(evo_path), format="png", width=1800, height=800, scale=2)
-        pdf.image(str(evo_path), x=14, y=86, w=269, h=108)
-
-        _pdf_add_figure_page(pdf, "Carga GPS", f"Sesion: {fecha_label}", _load_chart(df_sesion, render=False), temp_path / "carga.png")
-        _pdf_add_figure_page(pdf, "Distancia vs intensidad", f"Sesion: {fecha_label}", _distance_intensity_chart(df_sesion, render=False), temp_path / "intensidad.png")
-        _pdf_add_figure_page(pdf, "Riesgo por aceleraciones", f"Sesion: {fecha_label}", _acceleration_risk_chart(df_sesion, render=False), temp_path / "riesgo.png")
-        _pdf_add_figure_page(
-            pdf, "Comparativa de jugadores", f"Sesion: {fecha_label}",
-            _player_comparison_chart(df_sesion, metrica_col, metrica_label, render=False),
-            temp_path / "comparativa.png",
-        )
+    _pdf_draw_evolution_chart(pdf, df_evo_eq, metrica_col, metrica_label)
+    _pdf_add_chart_page(pdf, "Carga GPS", f"Sesion: {fecha_label}", _pdf_draw_load_chart, df_sesion)
+    _pdf_add_chart_page(pdf, "Distancia vs intensidad", f"Sesion: {fecha_label}", _pdf_draw_intensity_chart, df_sesion)
+    _pdf_add_chart_page(pdf, "Riesgo por aceleraciones", f"Sesion: {fecha_label}", _pdf_draw_acceleration_chart, df_sesion)
+    _pdf_add_chart_page(
+        pdf, "Comparativa de jugadores", f"Sesion: {fecha_label}",
+        _pdf_draw_comparison_chart, df_sesion, metrica_col, metrica_label,
+    )
 
     # Conclusion
     pdf.add_page()
@@ -2158,7 +2283,6 @@ def page_fisica():
             ):
                 with st.spinner("Generando informe PDF..."):
                     try:
-                        _ensure_pdf_browser()
                         st.session_state["gps_pdf_bytes"] = _build_gps_report_pdf(
                             df, df_sesion, fecha_label, metrica_col, metrica_label
                         )
