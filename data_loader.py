@@ -112,6 +112,10 @@ def _clean_value(val, col_interno: str = ""):
 
 def _parse_csv_text(content: str) -> pd.DataFrame:
     """Parsea el contenido de un CSV de Hudl y devuelve un DataFrame limpio."""
+    first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+    if first_line.startswith("CATEGORY:"):
+        raise ValueError("CSV de LongoMatch: requiere el importador de análisis de vídeo.")
+
     source = io.StringIO(content)
     title = source.readline().strip()
     match = re.match(r"CAdF\s+(?:vs|@)\s+(.+?)(?:\s+—|$)", title)
@@ -185,7 +189,12 @@ def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFra
             timeout=60,
         )
         content.raise_for_status()
-        frames.append(_parse_csv_text(content.content.decode("utf-8-sig")))
+        text = content.content.decode("utf-8-sig")
+        # Los CSV de LongoMatch se almacenan en la misma carpeta, pero no comparten
+        # la tabla de resumen de HUDL. Se integrarán desde su importador específico.
+        if text.lstrip().startswith("CATEGORY:"):
+            continue
+        frames.append(_parse_csv_text(text))
     return frames
 
 
