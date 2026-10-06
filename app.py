@@ -593,16 +593,11 @@ def render_sidebar(temporada: str = ""):
     # Cajitas de navegación
     for icon, label in NAV_ITEMS:
         active = st.session_state.page == label
-        # Wrapper div con clase activa/inactiva para que el CSS la pille
-        st.sidebar.markdown(
-            f'<div class="nav-item-{"active" if active else "inactive"}">',
-            unsafe_allow_html=True,
-        )
         if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}",
+                             type="primary" if active else "secondary",
                              use_container_width=True):
             st.session_state.page = label
             st.rerun()
-        st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
     if st.sidebar.button("🔄  Actualizar datos", key="refresh_drive_data", use_container_width=True):
         # Permite ver un archivo recién subido sin esperar al vencimiento de la caché.
@@ -1140,29 +1135,48 @@ def page_temporada(df: pd.DataFrame, video_df: pd.DataFrame):
                             line=dict(color="rgba(255,255,255,0.12)", width=1))
 
         pct_color = VERDE if avg_pct >= 80 else (DORADO if avg_pct >= 70 else ROJO)
-        r = 9
+        r, cy = 8, 44
         fig_pitch.add_shape(type="circle",
-                            x0=cx-r, y0=pitch_h/2-r, x1=cx+r, y1=pitch_h/2+r,
+                            x0=cx-r, y0=cy-r, x1=cx+r, y1=cy+r,
                             fillcolor=AZUL_OSCURO, line=dict(color=pct_color, width=2.5))
-        fig_pitch.add_annotation(x=cx, y=pitch_h/2, text=f"<b>{avg_pct:.0f}%</b>",
+        fig_pitch.add_annotation(x=cx, y=cy, text=f"<b>{avg_pct:.0f}%</b>",
                                   showarrow=False,
-                                  font=dict(color=pct_color, size=14, family="Inter"))
+                                  font=dict(color=pct_color, size=15, family="Inter"))
+        fig_pitch.add_annotation(x=cx, y=cy - r - 2.2, text="precisión", showarrow=False,
+                                  font=dict(color=GRIS_MEDIO, size=9, family="Inter"))
+        # Volumen: es lo que cambia entre promedio y total, así que se muestra en grande.
+        fig_pitch.add_annotation(x=cx, y=23, text=f"<b>{lbl_i}</b>", showarrow=False,
+                                  font=dict(color=BLANCO, size=24, family="Inter"))
+        fig_pitch.add_annotation(x=cx, y=16.5, showarrow=False,
+                                  text="pases por partido" if modo == "Promedio por partido" else "pases en total",
+                                  font=dict(color=GRIS_MEDIO, size=10, family="Inter"))
         fig_pitch.add_annotation(x=cx, y=pitch_h-5,
                                   text=f"<b>{zona.replace(chr(10),'<br>')}</b>",
                                   showarrow=False,
                                   font=dict(color="white", size=9, family="Inter"),
                                   align="center")
-        fig_pitch.add_annotation(x=cx, y=8,
-                                  text=f"✅ {lbl_c}   ❌ {lbl_p}",
-                                  showarrow=False,
-                                  font=dict(color=BLANCO, size=11, family="Inter"))
+        fig_pitch.add_annotation(x=cx, y=9,
+                                  text=f"<b><span style='color:#4CAF82'>{lbl_c}</span></b>"
+                                       f"<span style='color:#C8D6E5'>  /  </span>"
+                                       f"<b><span style='color:#E85D75'>{lbl_p}</span></b>",
+                                  showarrow=False, font=dict(color=BLANCO, size=13, family="Inter"))
+        fig_pitch.add_annotation(x=cx, y=4.5, text="completados / perdidos", showarrow=False,
+                                  font=dict(color=GRIS_MEDIO, size=9, family="Inter"))
 
+    fig_pitch.add_annotation(
+        x=0, y=pitch_h + 4, xanchor="left", showarrow=False,
+        text=(f"<b>Promedio por partido</b> · media de {n_partidos} partidos oficiales"
+              if modo == "Promedio por partido" else
+              f"<b>Total de temporada</b> · suma de {n_partidos} partidos oficiales"),
+        font=dict(color=DORADO, size=12, family="Inter"))
+    fig_pitch.add_annotation(x=pitch_w, y=pitch_h + 4, xanchor="right", showarrow=False,
+                             text="Ataque CAdF →", font=dict(color=GRIS_MEDIO, size=11, family="Inter"))
     fig_pitch.update_layout(
         paper_bgcolor=AZUL_OSCURO, plot_bgcolor=AZUL_OSCURO,
-        height=360, margin=dict(t=10, b=10, l=10, r=10),
+        height=420, margin=dict(t=10, b=10, l=10, r=10),
         xaxis=dict(range=[0, pitch_w], showgrid=False, zeroline=False,
                    showticklabels=False, scaleanchor="y", scaleratio=1),
-        yaxis=dict(range=[0, pitch_h], showgrid=False, zeroline=False,
+        yaxis=dict(range=[0, pitch_h + 8], showgrid=False, zeroline=False,
                    showticklabels=False),
         showlegend=False,
     )
@@ -3890,35 +3904,6 @@ def inject_css():
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.30) !important;
     }}
 
-    /* Estado INACTIVO */
-    div.nav-item-inactive .stButton button {{
-        background: {AZUL_MEDIO};
-        color: {GRIS_MEDIO};
-        border-color: rgba(106,175,230,0.1);
-    }}
-    div.nav-item-inactive .stButton button:hover {{
-        background: {AZUL_CLARO};
-        color: {BLANCO};
-        border-color: rgba(106,175,230,0.3);
-        transform: translateX(3px);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-    }}
-
-    /* Estado ACTIVO */
-    div.nav-item-active .stButton button {{
-        background: linear-gradient(135deg, {AZUL_CLARO} 0%, {AZUL_MEDIO} 100%);
-        color: {BLANCO} !important;
-        border-color: {DORADO};
-        border-left: 3px solid {DORADO};
-        box-shadow:
-            0 2px 8px rgba(0,0,0,0.3),
-            inset 0 1px 0 rgba(255,255,255,0.08);
-    }}
-    div.nav-item-active .stButton button:hover {{
-        background: linear-gradient(135deg, {AZUL_CLARO} 0%, {AZUL_MEDIO} 100%);
-        color: {BLANCO} !important;
-    }}
-
     /* Selectbox */
     div[data-baseweb="select"] > div {{
         background-color: {AZUL_MEDIO} !important;
@@ -4116,6 +4101,50 @@ def inject_css():
         .cadf-row-stat {{ display: none; }}
     }}
 
+    /* ── Menú lateral: página activa ── */
+    section[data-testid="stSidebar"] button[kind="primary"] {{
+        background: linear-gradient(135deg, {AZUL_CELESTE} 0%, #3D7FC0 100%) !important;
+        color: {AZUL_OSCURO} !important; font-weight: 800 !important;
+        border: 1px solid rgba(255,255,255,0.35) !important; border-left: 5px solid {DORADO} !important;
+        border-radius: 10px !important;
+        box-shadow: 0 0 0 1px rgba(106,175,230,0.35), 0 8px 22px rgba(106,175,230,0.35) !important;
+        transform: translateX(4px);
+    }}
+    section[data-testid="stSidebar"] button[kind="primary"]:hover {{
+        background: linear-gradient(135deg, #8CC3EE 0%, {AZUL_CELESTE} 100%) !important;
+        color: {AZUL_OSCURO} !important; transform: translateX(4px);
+    }}
+    section[data-testid="stSidebar"] button[kind="primary"] p {{ font-weight: 800 !important; }}
+    section[data-testid="stSidebar"] button[kind="secondary"] {{
+        background: {AZUL_MEDIO}; color: {GRIS_MEDIO}; border: 1px solid rgba(106,175,230,0.12);
+    }}
+    section[data-testid="stSidebar"] button[kind="secondary"]:hover {{
+        background: {AZUL_CLARO}; color: {BLANCO}; border-color: rgba(106,175,230,0.35);
+        transform: translateX(3px);
+    }}
+
+    /* ── Cabecera fija con la página actual ── */
+    header[data-testid="stHeader"] {{
+        background: rgba(22,35,63,0.88) !important; backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(106,175,230,0.18);
+    }}
+    .cadf-topbar {{
+        position: fixed; top: 11px; left: 50%; transform: translateX(-50%); z-index: 999991;
+        display: flex; align-items: center; gap: 9px; padding: 7px 18px; border-radius: 999px;
+        background: linear-gradient(135deg, {AZUL_MEDIO}, #22406C);
+        border: 1px solid rgba(201,168,76,0.55); box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+        color: {GRIS_MEDIO}; font-size: 0.8rem; white-space: nowrap;
+    }}
+    .cadf-topbar b {{ color: {BLANCO}; font-size: 0.9rem; font-weight: 800; }}
+    .cadf-topbar-dot {{ width: 8px; height: 8px; border-radius: 50%; background: {DORADO};
+                        box-shadow: 0 0 8px {DORADO}; }}
+    .cadf-topbar-sep {{ color: rgba(200,214,229,0.4); }}
+    .cadf-topbar-season {{ color: {DORADO}; font-size: 0.72rem; font-weight: 700; margin-left: 6px;
+                           padding-left: 10px; border-left: 1px solid rgba(200,214,229,0.25); }}
+    @media (max-width: 640px) {{
+        .cadf-topbar-club, .cadf-topbar-sep, .cadf-topbar-season {{ display: none; }}
+    }}
+
     /* Radio buttons */
     .stRadio > div {{
         background: {AZUL_MEDIO};
@@ -4163,6 +4192,12 @@ def main():
         return
 
     page = render_sidebar(season_label(df))
+    icon = dict((label, ic) for ic, label in NAV_ITEMS).get(page, "")
+    # Barra fija en la cabecera: siempre indica la página actual al hacer scroll.
+    st.markdown(f'<div class="cadf-topbar"><span class="cadf-topbar-dot"></span>'
+                f'<span class="cadf-topbar-club">Club Argentino</span><span class="cadf-topbar-sep">/</span>'
+                f'<b>{icon} {page}</b><span class="cadf-topbar-season">Temporada {season_label(df)}</span></div>',
+                unsafe_allow_html=True)
     # Temporada, Inicio y Rivales usan solo competición oficial; Partido permite ver también amistosos.
     df_oficial, video_oficial = split_friendlies(df, video_df)
 

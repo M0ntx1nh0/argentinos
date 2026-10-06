@@ -154,7 +154,7 @@ Las burbujas usan `marker.sizemode="diameter"` en píxeles para ser siempre circ
 
 El CSS se inyecta en `inject_css()`. Lo más relevante:
 - `.stPlotlyChart` tiene `box-shadow` y `border-radius:14px` para profundidad
-- `.nav-item-active / .nav-item-inactive` controlan el estilo de los botones de nav en el sidebar
+- La página activa del menú es un `st.button(type="primary")`; su estilo está en `section[data-testid="stSidebar"] button[kind="primary"]`. La barra fija `.cadf-topbar` (en `main()`) indica siempre la página actual.
 - Los gráficos usan `PLOT_BG` (más claro) para el área de datos y `PAPER_BG` para el fondo, creando efecto de profundidad
 
 ---
