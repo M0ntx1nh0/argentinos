@@ -87,8 +87,13 @@ TRAMO_ORDER = ["0-15","16-30","31-45","45+","46-60","61-75","76-90","90+"]
 
 - **`t(fig, height, **extra)`** — aplica template a cualquier figura Plotly (bgcolor, grid, font). Usar siempre en lugar de `update_layout` manual para charts simples.
 - **`chart(fig)`** — `st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})`. Usar siempre.
-- **`section(title)`** — título de sección en dorado con estilo uniforme.
-- **`metric_card(label, value, suffix)`** — tarjeta HTML con borde dorado.
+- **`page_header(title, subtitle, kicker, aside)`** — cabecera de página con degradado del club.
+- **`section(title, subtitle)`** — cabecera de capítulo; el subtítulo dice qué pregunta responde el bloque.
+- **`metric_card(label, value, suffix, delta, hint, accent)`** — tarjeta KPI; `delta=vs_ref(valor, media)` compara con la media de temporada.
+- **`insight_panel(items, heading)`** — conclusiones automáticas `(tono, titular, texto)`; tonos `pos/neg/warn/info`.
+- **`matches_table(df)`** — una fila por partido en orden cronológico (jornada, condición, resultado, puntos).
+- **`season_insights` / `match_insights` / `rival_insights`** — reglas que convierten los datos en las conclusiones de cada página.
+- Las clases CSS `cadf-*` (en `inject_css()`) definen todos estos componentes.
 - **`_cell_color(val)`** — devuelve `(fillcolor, textcolor)` para el heatmap según % posesión.
 - **`_timeline_chart(temporada_df)`** — gráfico combinado diferencia+acumulado de goles.
 
@@ -100,10 +105,10 @@ La navegación usa `st.session_state.page` + botones estilizados como cajitas. *
 
 | Función | Contenido principal |
 |---|---|
-| `page_inicio(df)` | KPIs, balance V/E/D, tabla resultados, gráfico diferencia+acumulado, descripción secciones |
-| `page_temporada(df)` | Heatmap posesión por tramo, 1ª vs 2ª mitad, posesión+pases, campograma temporada, tiros+eficacia, timeline diferencia |
-| `page_partido(df)` | Banner resultado, match momentum, línea de vida, 1ª vs 2ª mitad, campograma partido (pitch+barras en `make_subplots`) |
-| `page_rivales(df)` | Perfil rival, gráfico tramos de control |
+| `page_inicio(df, video_df)` | Cabecera con puntos y racha, KPIs, "La temporada en claves", puntos acumulados, goles por tramo, resultados |
+| `page_temporada(df, video_df)` | Capítulos: 1 rendimiento (scorecard vs media + diferencia de goles), 2 control por tramos, 3 mitades, 4 ataque, 5 defensa y balón parado, 6 vídeo |
+| `page_partido(df, video_df)` | Marcador, KPIs vs media, "Claves del partido", momentum, mitades, campograma, cadenas, defensa, vídeo |
+| `page_rivales(df, video_df)` | Comparativa de rivales, perfil del rival (construcción y finalización según vídeo), claves para la vuelta, tramos de control |
 
 ---
 
@@ -121,7 +126,12 @@ Línea 3+: datos (incluyendo filas de sección repetidas que se descartan)
 - `CAdF vs CSE` → 3-0 (GF=3, GE=0 en Hudl)
 - `CAdF vs RFC` → 2-0 (GF=2, GE=0 en Hudl)
 
-**Añadir un partido nuevo:** copiar el CSV de Hudl en `data/` y hacer `git push`. Sin más cambios.
+**Añadir un partido nuevo:** subir el CSV de Hudl a la carpeta `Partidos` de la temporada en Drive.
+- **Orden cronológico (`jornada`):** fecha del nombre del archivo si la lleva (`2026-09-06` o `06-09-2026`); si no, la fecha de subida a Drive. Subir los partidos en orden o incluir la fecha en el nombre.
+- **Local/visitante (`condicion`):** `CAdF vs Rival` = local, `CAdF @ Rival` = visitante (título del CSV o nombre del archivo).
+- La etiqueta de temporada se lee de la fila `"2026-2027 Season"`; no está escrita en el código.
+- **Amistosos (`competicion`):** se detectan si el nombre del archivo contiene "Amistoso" o "Pretemporada", o si el rival está en `AMISTOSOS_CONOCIDOS` (data_loader.py, por temporada). Llevan `jornada = 0`, se excluyen de Inicio/Temporada/Rivales (`split_friendlies`) y solo se ven en Partido.
+- **Tipos de gol (`goal_sequence` / `_classify_goals`):** tramo según HUDL; orden dentro del mismo tramo según LongoMatch. Remontada = gol que pone por delante a quien iba perdiendo, siendo el último gol del partido.
 
 **Lo que Hudl NO exporta:** fechas de partido, datos del rival, coordenadas de eventos (sin shot maps ni pass networks).
 

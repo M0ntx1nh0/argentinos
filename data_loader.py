@@ -110,7 +110,37 @@ def _clean_value(val, col_interno: str = ""):
         return s
 
 
-def _parse_csv_text(content: str) -> pd.DataFrame:
+def _match_date(filename: str, created: str | None) -> pd.Timestamp:
+    """Fecha de referencia del partido: la del nombre del archivo si existe
+    (2026-09-06 o 06-09-2026) y, si no, la de subida a Drive."""
+    found = re.search(r"(\d{4})[-_.](\d{2})[-_.](\d{2})", filename)
+    if found:
+        return pd.Timestamp(f"{found.group(1)}-{found.group(2)}-{found.group(3)}")
+    found = re.search(r"(\d{2})[-_.](\d{2})[-_.](\d{4})", filename)
+    if found:
+        return pd.Timestamp(f"{found.group(3)}-{found.group(2)}-{found.group(1)}")
+    return pd.to_datetime(created, utc=True).tz_localize(None) if created else pd.NaT
+
+
+# Partidos amistosos / de pretemporada. Se detectan solos si el nombre del archivo
+# contiene una de FRIENDLY_WORDS; si no, se declaran aquí por temporada y rival.
+FRIENDLY_WORDS = ("amistoso", "pretemporada")
+AMISTOSOS_CONOCIDOS = {
+    "2026-2027": {"adtorrejoncf"},
+}
+
+
+def _norm(value: str) -> str:
+    value = str(value).lower().translate(str.maketrans("áéíóúüñ", "aeiouun"))
+    return "".join(char for char in value if char.isalnum())
+
+
+def _strip_friendly_words(text: str) -> str:
+    pattern = r"\s*[\(\[\-–]?\s*(?:" + "|".join(FRIENDLY_WORDS) + r")\s*[\)\]]?"
+    return re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+
+def _parse_csv_text(content: str, filename: str = "", created: str | None = None) -> pd.DataFrame:
     """Parsea el contenido de un CSV de Hudl y devuelve un DataFrame limpio."""
     first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
     if first_line.startswith("CATEGORY:"):
@@ -118,8 +148,14 @@ def _parse_csv_text(content: str) -> pd.DataFrame:
 
     source = io.StringIO(content)
     title = source.readline().strip()
-    match = re.match(r"CAdF\s+(?:vs|@)\s+(.+?)(?:\s+—|$)", title)
-    rival = match.group(1).strip() if match else "Desconocido"
+    match = (re.match(r"CAdF\s+(vs|@)\s+(.+?)(?:\s+—|$)", title)
+             or re.match(r"CAdF\s+(vs|@)\s+(.+?)(?:\s+—|\.csv$|$)", filename))
+    rival = _strip_friendly_words(match.group(2)) if match else "Desconocido"
+    season = re.search(r"(\d{4}-\d{4}) Season", content)
+    friendly = (any(word in filename.lower() for word in FRIENDLY_WORDS)
+                or _norm(rival) in AMISTOSOS_CONOCIDOS.get(season.group(1) if season else "", set()))
+    # Hudl nombra "CAdF @ Rival" los partidos fuera de casa y "CAdF vs Rival" en casa.
+    condicion = "Visitante" if match and match.group(1) == "@" else "Local"
 
     source.seek(0)
     raw = pd.read_csv(source, header=None, skiprows=1, dtype=str)
@@ -146,6 +182,8 @@ def _parse_csv_text(content: str) -> pd.DataFrame:
             else NIVEL_MAP.get(tramo_raw, "tramo")
         )
         record    = {"partido": f"CAdF vs {rival}", "rival": rival,
+                     "condicion": condicion, "fecha_ref": _match_date(filename, created),
+                     "competicion": "Amistoso" if friendly else "Oficial",
                      "nivel": nivel, "tramo_raw": tramo_raw}
         for col_hudl, col_interno in COL_MAP.items():
             if col_hudl in row.index and col_hudl != "Partidos":
@@ -158,7 +196,7 @@ def _parse_csv_text(content: str) -> pd.DataFrame:
 def _parse_csv(filepath: str) -> pd.DataFrame:
     """Compatibilidad para cargar un CSV de Hudl desde el sistema local."""
     with open(filepath, encoding="utf-8-sig") as source:
-        return _parse_csv_text(source.read())
+        return _parse_csv_text(source.read(), os.path.basename(filepath))
 
 
 def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFrame]:
@@ -168,7 +206,7 @@ def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFra
         headers=headers,
         params={
             "q": query,
-            "fields": "files(id,name,mimeType)",
+            "fields": "files(id,name,mimeType,createdTime)",
             "orderBy": "name",
             "pageSize": 200,
             "supportsAllDrives": "true",
@@ -194,7 +232,7 @@ def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFra
         # la tabla de resumen de HUDL. Se integrarán desde su importador específico.
         if text.lstrip().startswith("CATEGORY:"):
             continue
-        frames.append(_parse_csv_text(text))
+        frames.append(_parse_csv_text(text, drive_file["name"], drive_file.get("createdTime")))
     return frames
 
 
@@ -218,7 +256,15 @@ def load_all(drive_folder_id: str, drive_headers: dict[str, str]) -> pd.DataFram
         lambda x: 0 if re.fullmatch(r"\d{4}-\d{4} Season", str(x))
         else tramo_order.index(x) + 1 if x in tramo_order else 99
     )
-    return df.sort_values(["partido", "tramo_orden"]).reset_index(drop=True)
+    # Orden cronológico: la historia de la temporada depende de él (acumulados, forma).
+    # Las jornadas solo cuentan partidos oficiales; los amistosos llevan jornada 0.
+    fechas = df.groupby("partido").agg(fecha=("fecha_ref", "min"), comp=("competicion", "first"))
+    fechas = fechas.sort_values("fecha", na_position="last")
+    oficiales = fechas[fechas["comp"] == "Oficial"].index
+    jornadas = {p: i + 1 for i, p in enumerate(oficiales)}
+    df["jornada"] = df["partido"].map(lambda p: jornadas.get(p, 0))
+    df["orden"] = df["partido"].map({p: i for i, p in enumerate(fechas.index)})
+    return df.sort_values(["orden", "tramo_orden"]).reset_index(drop=True)
 
 
 if __name__ == "__main__":
