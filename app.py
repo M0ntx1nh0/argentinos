@@ -2060,12 +2060,64 @@ def _tactical_rival_key(value: str) -> str:
     """Une los nombres de rival de HUDL y LongoMatch sin forzar el texto mostrado."""
     value = str(value).lower().translate(str.maketrans("áéíóúüñ", "aeiouun"))
     key = "".join(char for char in value if char.isalnum())
-    key = key.removesuffix("cf")
-    aliases = {
-        "rmb": "rayomajadahondab",
-        "fundacionadfa": "fundacionadf",
-    }
-    return aliases.get(key, key)
+    return key.removesuffix("cf")
+
+
+def _is_subsequence(short: str, long: str) -> bool:
+    letters = iter(long)
+    return all(char in letters for char in short)
+
+
+def _names_match(hudl_key: str, video_key: str) -> bool:
+    """Mismo rival aunque HUDL y LongoMatch lo escriban distinto:
+    nombre igual, uno es prefijo del otro (Fundacion ADF A / Fundacion ADF)
+    o siglas de HUDL (CGD → CD Guadalix, RMB → Rayo Majadahonda B)."""
+    if hudl_key == video_key:
+        return True
+    short, long = sorted([hudl_key, video_key], key=len)
+    if len(short) >= 6 and long.startswith(short):
+        return True
+    return 2 <= len(short) <= 4 and short[0] == long[0] and _is_subsequence(short, long)
+
+
+def align_video_rivals(df: pd.DataFrame, video_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Renombra el rival de cada archivo de LongoMatch con el nombre de HUDL.
+
+    Devuelve (vídeo alineado, archivos de vídeo sin partido, partidos sin vídeo)."""
+    hudl_rivals = df.loc[df["nivel"] == "temporada", "rival"].unique().tolist()
+    if video_df.empty:
+        return video_df, [], hudl_rivals
+    mapping, unmatched = {}, []
+    for video_rival in video_df["rival"].unique():
+        vkey = _tactical_rival_key(video_rival)
+        candidates = [h for h in hudl_rivals if _names_match(_tactical_rival_key(h), vkey)]
+        exact = [h for h in candidates if _tactical_rival_key(h) == vkey]
+        chosen = exact or candidates
+        if len(chosen) == 1:
+            mapping[video_rival] = chosen[0]
+        else:
+            unmatched.append(video_rival)
+    video_df = video_df.copy()
+    video_df["rival"] = video_df["rival"].map(lambda r: mapping.get(r, r))
+    without_video = [h for h in hudl_rivals if h not in mapping.values()]
+    return video_df, unmatched, without_video
+
+
+def video_status_note(unmatched: list[str], without_video: list[str]):
+    """Avisa al cuerpo técnico de qué falta para cruzar vídeo y estadística."""
+    lines = []
+    if without_video:
+        lines.append("<b>Partidos sin CSV de LongoMatch:</b> " + ", ".join(without_video)
+                     + ". Exportar el análisis a CSV desde LongoMatch y subirlo a la carpeta Partidos "
+                       "(el archivo .lgm no se puede leer).")
+    if unmatched:
+        lines.append("<b>CSV de vídeo sin partido de HUDL asociado:</b> " + ", ".join(unmatched)
+                     + ". Revisar que el nombre del rival coincida con el del archivo de HUDL.")
+    if lines:
+        st.markdown(f'<div class="cadf-insight" style="--tone:{DORADO}">'
+                    f'<div class="cadf-insight-title">Estado del vídeo análisis</div>'
+                    f'<div class="cadf-insight-body">{"<br>".join(lines)}</div></div>',
+                    unsafe_allow_html=True)
 
 
 def _video_events_for_rival(video_df: pd.DataFrame, rival: str) -> pd.DataFrame:
@@ -2250,7 +2302,8 @@ def _render_tactical_match_summary(video_df: pd.DataFrame, rival: str):
     events = _video_events_for_rival(video_df, rival)
     if events.empty:
         st.info(
-            "No hay un CSV de LongoMatch vinculado a este partido todavía. "
+            "No hay un CSV de LongoMatch vinculado a este partido todavía (el archivo .lgm no se puede leer: "
+            "hay que exportar el análisis a CSV desde LongoMatch). "
             "Cuando se suba a la carpeta Partidos de Drive, aparecerá aquí automáticamente."
         )
         return
@@ -2484,6 +2537,8 @@ def _render_tactical_match_summary(video_df: pd.DataFrame, rival: str):
 def _render_tactical_season_summary(video_df: pd.DataFrame, hudl_matches: int):
     """Resume la temporada de vídeo sin mezclarla con las métricas HUDL."""
     section("Vídeo análisis táctico · acumulado")
+    unmatched, missing = st.session_state.get("video_status", ([], []))
+    video_status_note(unmatched, missing)
     if video_df.empty:
         st.info("Aún no hay CSV de LongoMatch disponibles en Google Drive.")
         return
@@ -4191,6 +4246,8 @@ def main():
         st.error("No se encontraron datos en /data")
         return
 
+    video_df, video_unmatched, video_missing = align_video_rivals(df, video_df)
+    st.session_state["video_status"] = (video_unmatched, video_missing)
     page = render_sidebar(season_label(df))
     icon = dict((label, ic) for ic, label in NAV_ITEMS).get(page, "")
     # Barra fija en la cabecera: siempre indica la página actual al hacer scroll.

@@ -131,6 +131,7 @@ Línea 3+: datos (incluyendo filas de sección repetidas que se descartan)
 - **Local/visitante (`condicion`):** `CAdF vs Rival` = local, `CAdF @ Rival` = visitante (título del CSV o nombre del archivo).
 - La etiqueta de temporada se lee de la fila `"2026-2027 Season"`; no está escrita en el código.
 - **Amistosos (`competicion`):** se detectan si el nombre del archivo contiene "Amistoso" o "Pretemporada", o si el rival está en `AMISTOSOS_CONOCIDOS` (data_loader.py, por temporada). Llevan `jornada = 0`, se excluyen de Inicio/Temporada/Rivales (`split_friendlies`) y solo se ven en Partido.
+- **Vídeo LongoMatch ↔ partido HUDL (`align_video_rivals`):** al cargar, cada CSV de LongoMatch se asigna al partido de HUDL por nombre del rival: igual, prefijo (Fundacion ADF ↔ Fundacion ADF A) o siglas de HUDL (CGD ↔ CD Guadalix, RMB ↔ Rayo Majadahonda B), solo si hay un único candidato. Lo que no empareja aparece en el aviso "Estado del vídeo análisis" (Temporada). Los `.lgm` no se leen: hay que exportar a CSV.
 - **Tipos de gol (`goal_sequence` / `_classify_goals`):** tramo según HUDL; orden dentro del mismo tramo según LongoMatch. Remontada = gol que pone por delante a quien iba perdiendo, siendo el último gol del partido.
 
 **Lo que Hudl NO exporta:** fechas de partido, datos del rival, coordenadas de eventos (sin shot maps ni pass networks).
