@@ -260,4 +260,8 @@ def load_longomatch_events(folder_id: str, headers: dict[str, str]) -> pd.DataFr
     events = pd.concat(frames, ignore_index=True).sort_values(
         ["partido", "time_seconds"]
     ).reset_index(drop=True)
+    # Una llegada cuyo tipo es "Remate" ya es un remate: el analista no repite la etiqueta "Remata".
+    implied = (events["fase"] == "finalizacion") & (events["tipo_llegada"] == "Remate") & events["remate"].isna()
+    events["remate_inferido"] = implied
+    events.loc[implied, "remate"] = "Remata"
     return _canonical_players(events)

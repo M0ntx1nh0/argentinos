@@ -2459,82 +2459,119 @@ def _remate_share(events: pd.DataFrame) -> tuple[int, int]:
     return len(tagged), int((tagged == "Remata").sum())
 
 
+def _coverage_line(label: str, events: pd.DataFrame) -> str:
+    total = len(events)
+    tagged = int(events["remate"].notna().sum())
+    shooters = int(events["rematador"].notna().sum()) if "rematador" in events.columns else 0
+    passers = int(events["jugador"].notna().sum())
+    inferred = int(events["remate_inferido"].sum()) if "remate_inferido" in events.columns else 0
+    return (f"<b>{label}:</b> {total} llegadas · <b>{tagged}</b> con Remata/No remata"
+            f" ({tagged / total * 100 if total else 0:.0f}%)"
+            + (f", de ellas {inferred} por ser llegada de tipo «Remate»" if inferred else "")
+            + f" · <b>{total - tagged}</b> sin etiquetar"
+            + (f" · pasador en {passers} · rematador en {shooters}" if label == "CAdF" else ""))
+
+
 def _finishing_quality_block(events: pd.DataFrame, rival_label: str, per_match: bool = False):
-    """¿Cuántas llegadas acaban en remate? Por equipo, tipo de llegada y, en temporada, por partido."""
+    """¿Cuántas llegadas acaban en remate? Siempre sobre el total de llegadas, mostrando lo no etiquetado."""
     if "remate" not in events.columns or events["remate"].dropna().empty:
         st.caption("Calidad de finalización: este vídeo aún no lleva las etiquetas Remata / No remata.")
         return
     fin = events[events["fase"] == "finalizacion"]
+    if per_match:
+        # En temporada solo cuentan los partidos que ya usan la etiqueta Remata/No remata.
+        fin = fin[fin["rival"].isin(fin.dropna(subset=["remate"])["rival"].unique())]
     own, opp = fin[fin["equipo"] == "propio"], fin[fin["equipo"] == "rival"]
     section("Calidad de la finalización",
-            "De las llegadas a zona de finalización, ¿cuántas terminan en remate? "
-            "Solo cuenta acciones etiquetadas con Remata / No remata.")
+            "De las llegadas a zona de finalización (las mismas del campograma), ¿cuántas terminan en remate? "
+            "El % se calcula sobre las llegadas que el analista ha etiquetado con Remata / No remata.")
+    st.markdown(f'<div class="cadf-coverage">📋 {_coverage_line("CAdF", own)}<br>'
+                f'📋 {_coverage_line(rival_label, opp)}</div>', unsafe_allow_html=True)
     n_own, r_own = _remate_share(own)
     n_opp, r_opp = _remate_share(opp)
     cols = st.columns(3)
     cols[0].markdown(metric_card("Llegadas CAdF que acaban en remate",
                                  f"{r_own / n_own * 100:.0f}" if n_own else "—", "%" if n_own else "",
-                                 hint=f"{r_own} de {n_own} llegadas etiquetadas", accent=AZUL_CELESTE),
-                     unsafe_allow_html=True)
+                                 hint=f"{r_own} de {n_own} etiquetadas · {len(own) - n_own} sin etiquetar",
+                                 accent=AZUL_CELESTE), unsafe_allow_html=True)
     cols[1].markdown(metric_card(f"Llegadas de {rival_label} con remate",
                                  f"{r_opp / n_opp * 100:.0f}" if n_opp else "—", "%" if n_opp else "",
-                                 hint=f"{r_opp} de {n_opp} llegadas etiquetadas", accent=ROJO),
+                                 hint=f"{r_opp} de {n_opp} etiquetadas · {len(opp) - n_opp} sin etiquetar",
+                                 accent=ROJO), unsafe_allow_html=True)
+    passers = own["jugador"].dropna().value_counts()
+    cols[2].markdown(metric_card("Más llegadas generadas",
+                                 f'<span class="cadf-kpi-name">{_short(passers.index[0])}</span>' if len(passers) else "—",
+                                 hint=f"da el pase o centro en {passers.iloc[0]} de {len(own)} llegadas"
+                                 if len(passers) else "sin jugador etiquetado", accent=DORADO),
                      unsafe_allow_html=True)
-    shooters = own.dropna(subset=["rematador"])["rematador"].value_counts() if "rematador" in own else pd.Series()
-    cols[2].markdown(metric_card("Rematador más buscado",
-                                 f'<span class="cadf-kpi-name">{shooters.index[0].split("-", 1)[-1]}</span>'
-                                 if len(shooters) else "—",
-                                 hint=f"{shooters.iloc[0]} remates tras pase" if len(shooters) else "sin etiqueta de rematador",
-                                 accent=DORADO), unsafe_allow_html=True)
 
+    outcome_colors = [("Remata", "Acaba en remate", VERDE), ("No remata", "No llega a rematar", "#5B6B84"),
+                      ("Sin etiquetar", "Sin etiquetar", "rgba(200,214,229,0.18)")]
+    labelled = own.assign(resultado=own["remate"].fillna("Sin etiquetar"))
     c1, c2 = st.columns(2)
     with c1:
         tipos = ["Centro", "Pase filtrado", "Remate"]
-        tagged = own.dropna(subset=["remate"])
-        table = pd.crosstab(tagged["tipo_llegada"], tagged["remate"]).reindex(
-            index=tipos, columns=["Remata", "No remata"], fill_value=0)
+        table = pd.crosstab(labelled["tipo_llegada"], labelled["resultado"]).reindex(
+            index=tipos, columns=[k for k, _, _ in outcome_colors], fill_value=0)
+        table = table[table.sum(axis=1) > 0]
         fig = go.Figure()
-        fig.add_trace(depth_bar(VERDE, "Acaba en remate", tipos, table["Remata"], pos="inside"))
-        fig.add_trace(depth_bar("#5B6B84", "No llega a rematar", tipos, table["No remata"], pos="inside"))
-        pct = [f"{r / (r + n) * 100:.0f}% remata" if r + n else "" for r, n in zip(table["Remata"], table["No remata"])]
-        for x, total, label in zip(tipos, table.sum(axis=1), pct):
-            fig.add_annotation(x=x, y=total, text=f"<b>{label}</b>", showarrow=False, yshift=12,
-                               font=dict(color=BLANCO, size=11, family="Inter"))
-        t(fig, height=320, barmode="stack", title="CAdF · ¿qué tipo de llegada acaba en remate?",
+        for key, name, color in outcome_colors:
+            fig.add_trace(go.Bar(name=name, x=table.index, y=table[key], marker=dict(color=color),
+                                 text=[str(v) if v else "" for v in table[key]], textposition="inside",
+                                 textfont=dict(color=BLANCO, size=12)))
+        for x, row in table.iterrows():
+            tagged = row["Remata"] + row["No remata"]
+            label = f"{row['Remata'] / tagged * 100:.0f}% remata" if tagged else "sin etiquetar"
+            fig.add_annotation(x=x, y=row.sum(), text=f"<b>{row.sum()} llegadas</b><br>{label}", showarrow=False,
+                               yshift=18, font=dict(color=BLANCO, size=11, family="Inter"))
+        t(fig, height=340, barmode="stack", title=f"CAdF · {len(own)} llegadas por tipo",
           margin=dict(t=48, b=72, l=36, r=16))
-        fig.update_yaxes(range=[0, max(int(table.sum(axis=1).max()), 1) * 1.25])
+        fig.update_yaxes(range=[0, max(int(table.sum(axis=1).max()) if len(table) else 1, 1) * 1.3])
         fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.14, x=0))
         chart(fig)
     with c2:
         if per_match:
             rows = []
-            for rival, ev in events.groupby("rival", sort=False):
-                a, b = _remate_share(ev[(ev["fase"] == "finalizacion") & (ev["equipo"] == "propio")])
-                c, d = _remate_share(ev[(ev["fase"] == "finalizacion") & (ev["equipo"] == "rival")])
-                if a or c:
-                    rows.append((rival, b / a * 100 if a else 0, d / c * 100 if c else 0))
-            data = pd.DataFrame(rows, columns=["rival", "cadf", "rival_pct"])
+            for rival, ev in fin.groupby("rival", sort=False):
+                for team in ["propio", "rival"]:
+                    part = ev[ev["equipo"] == team]
+                    n, r = _remate_share(part)
+                    rows.append((rival, team, r / n * 100 if n else None, n, len(part)))
+            data = pd.DataFrame(rows, columns=["rival", "equipo", "pct", "tagged", "total"])
             fig = go.Figure()
-            fig.add_trace(depth_bar(AZUL_CELESTE, "CAdF", data["rival"], data["cadf"].round(0),
-                                    text=[f"{v:.0f}%" for v in data["cadf"]]))
-            fig.add_trace(depth_bar(ROJO, "Rival", data["rival"], data["rival_pct"].round(0),
-                                    text=[f"{v:.0f}%" for v in data["rival_pct"]]))
-            t(fig, height=320, barmode="group", title="% de llegadas que acaban en remate, por partido",
+            for team, name, color in [("propio", "CAdF", AZUL_CELESTE), ("rival", "Rival", ROJO)]:
+                d = data[data["equipo"] == team]
+                fig.add_trace(go.Bar(
+                    name=name, x=d["rival"], y=d["pct"].fillna(0), marker=dict(color=color),
+                    text=[f"{p:.0f}%<br><span style='font-size:10px'>{a}/{b}</span>" if pd.notna(p) else "s/e"
+                          for p, a, b in zip(d["pct"], d["tagged"], d["total"])],
+                    textposition="outside", textfont=dict(color=BLANCO, size=11),
+                    hovertemplate="%{x}<br>%{y:.0f}% de las etiquetadas<extra></extra>"))
+            t(fig, height=340, barmode="group", title="% de llegadas con remate, por partido (etiquetadas/total)",
               margin=dict(t=48, b=72, l=36, r=16))
-            fig.update_yaxes(range=[0, 110], ticksuffix="%")
+            fig.update_yaxes(range=[0, 120], ticksuffix="%")
         else:
-            pairs = (own.dropna(subset=["jugador", "rematador"])
-                     .groupby(["jugador", "rematador"]).size().sort_values(ascending=True).tail(8))
+            table = pd.crosstab(labelled["jugador"].fillna("Sin jugador"), labelled["resultado"]).reindex(
+                columns=[k for k, _, _ in outcome_colors], fill_value=0)
+            table["total"] = table.sum(axis=1)
+            table = table.sort_values("total").tail(10)
+            names = [_short(n) if n != "Sin jugador" else n for n in table.index]
             fig = go.Figure()
-            if len(pairs):
-                labels = [f"{p.split('-', 1)[-1]} → {r.split('-', 1)[-1]}" for p, r in pairs.index]
-                fig.add_trace(go.Bar(x=pairs.values, y=labels, orientation="h", marker=dict(color=DORADO),
-                                     text=pairs.values, textposition="outside",
-                                     textfont=dict(color=BLANCO, size=12)))
-            else:
-                fig.add_annotation(text="Sin etiquetas de rematador en este partido", showarrow=False,
-                                   x=0.5, y=0.5, xref="paper", yref="paper", font=dict(color=GRIS_MEDIO))
-            t(fig, height=320, title="Conexiones pasador → rematador", margin=dict(t=48, b=36, l=150, r=30))
+            for key, name, color in outcome_colors:
+                fig.add_trace(go.Bar(name=name, y=names, x=table[key], orientation="h", marker=dict(color=color),
+                                     text=[str(v) if v else "" for v in table[key]], textposition="inside",
+                                     textfont=dict(color=BLANCO, size=11)))
+            # Rematador conocido de las llegadas de cada pasador.
+            for passer, name, total in zip(table.index, names, table["total"]):
+                targets = own[(own["jugador"] == passer) & own["rematador"].notna()]["rematador"].value_counts()
+                note = "  → " + ", ".join(f"{_short(r).split(' (')[0]}" + (f" ×{c}" if c > 1 else "")
+                                          for r, c in targets.items()) if len(targets) else ""
+                fig.add_annotation(x=total, y=name, text=f"<b>{total}</b>{note}", showarrow=False, xanchor="left",
+                                   xshift=6, font=dict(color=BLANCO if not note else DORADO, size=11))
+            t(fig, height=max(320, 32 * len(table) + 110), barmode="stack",
+              title="¿Quién da el pase en cada llegada? (→ rematador, si está etiquetado)",
+              margin=dict(t=48, b=72, l=150, r=150))
+            fig.update_xaxes(dtick=1 if table["total"].max() <= 8 else None, range=[0, table["total"].max() * 1.15])
         fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.14, x=0))
         chart(fig)
 
@@ -4402,6 +4439,10 @@ def inject_css():
     .cadf-kpi-value {{ color: {BLANCO}; font-size: 1.95rem; font-weight: 800; line-height: 1.05;
                        font-variant-numeric: tabular-nums; }}
     .cadf-kpi-value span {{ font-size: 0.95rem; color: {AZUL_CELESTE}; margin-left: 2px; font-weight: 600; }}
+    .cadf-coverage {{ color: {GRIS_MEDIO}; font-size: 0.8rem; line-height: 1.7; margin: -2px 0 10px;
+                      padding: 8px 14px; border-radius: 10px; background: rgba(20,34,60,0.55);
+                      border: 1px dashed rgba(200,214,229,0.2); }}
+    .cadf-coverage b {{ color: {BLANCO}; }}
     .cadf-kpi-name {{ font-size: 1.15rem; font-weight: 800; line-height: 1.25; display: inline-block; }}
     .cadf-kpi-delta {{ font-size: 0.74rem; font-weight: 700; margin-top: 6px; }}
     .cadf-kpi-hint {{ color: {GRIS_MEDIO}; font-size: 0.72rem; margin-top: 5px; line-height: 1.35; opacity: 0.85; }}
