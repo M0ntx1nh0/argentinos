@@ -32,6 +32,9 @@ def _seconds(value: str) -> float:
 
 def _match_details(filename: str) -> tuple[str, str]:
     stem = re.sub(r"\.csv$", "", filename, flags=re.IGNORECASE).strip()
+    # Algunos CSV se exportan con el nombre del archivo de HUDL:
+    # "CAdF @ UDA - Todos Atletas - Promedios" → rival "UDA".
+    stem = re.split(r"\s+[—–-]\s+Todos Atletas", stem, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     match = re.match(r"CAdF\s+(?:vs|@)\s+(.+)", stem, flags=re.IGNORECASE)
     rival = match.group(1).strip() if match else stem
     # "CAdF @ Rival (Amistoso)" → el rival sigue siendo "Rival" para cruzarlo con HUDL.
@@ -45,6 +48,11 @@ def _category_details(category: str) -> tuple[str, str]:
     value = _key(category)
     rival = "RIVAL" in value
     team = "rival" if rival else "propio"
+    # "INICIO 1T"/"INICIO 2T" marcan el comienzo de cada parte, no un inicio de juego.
+    if re.fullmatch(r"INICIO [12] ?T", value):
+        return "partido", "inicio_parte"
+    if "ASISTENCIA" in value:
+        return "propio", "asistencia"
     if "INICIO" in value:
         return team, "inicio"
     if "PROGRES" in value or "PROGRE" in value or "ATAQUE" in value:
@@ -77,6 +85,48 @@ def _selected(tags: set[str], options: dict[str, str]) -> str | None:
         if tag in tags:
             return label
     return None
+
+
+PLAYER_TAG = re.compile(r"^([A-Z][A-Z ]*?)\s+(\d{1,2})$")
+
+
+def _player_tag(tags: set[str]) -> str | None:
+    """Etiqueta con nombre y dorsal ("SOLDATI 20"): el jugador que remata."""
+    for tag in sorted(tags):
+        if PLAYER_TAG.match(tag):
+            return tag
+    return None
+
+
+def _dorsal(value: str | None) -> str | None:
+    if not value:
+        return None
+    found = re.match(r"^(\d{1,2})\s*-", value) or PLAYER_TAG.match(value)
+    if not found:
+        return None
+    return found.group(1) if found.re is not PLAYER_TAG else found.group(2)
+
+
+def _canonical_players(events: pd.DataFrame) -> pd.DataFrame:
+    """Unifica jugadores por dorsal: el nombre más usado en la columna Player
+    ("7-Lucas Appiolaza") sustituye variantes y etiquetas ("APPIOLAZZA 7")."""
+    players = events["jugador"].dropna()
+    players = players[~players.str.contains(r"\bPlayer\b", case=False)]
+    roster = (pd.DataFrame({"dorsal": players.map(_dorsal), "nombre": players})
+              .dropna().groupby("dorsal")["nombre"].agg(lambda s: s.value_counts().index[0]).to_dict())
+
+    def canonical(value):
+        if not isinstance(value, str) or not value or re.search(r"\bPlayer\b", value, re.IGNORECASE):
+            return None
+        dorsal = _dorsal(value)
+        if dorsal in roster:
+            return roster[dorsal]
+        tag = PLAYER_TAG.match(value)
+        return f"{tag.group(2)}-{tag.group(1).title()}" if tag else value
+
+    events["jugador"] = events["jugador"].map(canonical)
+    events["rematador"] = events["rematador"].map(canonical)
+    return events
 
 
 def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
@@ -134,7 +184,9 @@ def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
                 "equipo": equipo,
                 "fase": fase,
                 "nombre": fixed.get("Name", "").strip(),
-                "jugador": fixed.get("Player", "").strip() or None,
+                # Player = quien da el pase/centro o ejecuta; la etiqueta con nombre = quien remata.
+                "jugador": " ".join(fixed.get("Player", "").split()) or None,
+                "rematador": _player_tag(tags),
                 "time_seconds": _seconds(fixed.get("Time", "")),
                 "time_label": fixed.get("Time", "").strip(),
                 "zona": zona,
@@ -149,7 +201,20 @@ def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
                     "PTP": "PTP", "REPLIEGUE": "Repliegue", "MIXTA": "Mixta",
                 }),
                 "origen_recuperacion_perdida": _selected(tags, {
-                    "GENERADA": "Generada", "NO GENERADA": "No generada",
+                    "NO GENERADA": "No generada", "GENERADA": "Generada",
+                }),
+                # Etiquetas añadidas en octubre de 2026.
+                "remate": _selected(tags, {"NO REMATA": "No remata", "REMATA": "Remata"}),
+                "destino_bp": _selected(tags, {
+                    "PRIMER PALO": "Primer palo", "PUNTO PENAL": "Punto de penalti",
+                    "SEGUNDO PALO": "Segundo palo",
+                }),
+                "zona_falta": _selected(tags, {
+                    "DIRECTA": "Directa", "FRONTAL": "Frontal", "MEDIALUNA": "Frontal",
+                    "LATERAL": "Lateral", "LEJANA": "Lejana",
+                }),
+                "rol_transicion": _selected(tags, {
+                    "INFLUENCIA": "Influencia", "COOPERACION": "Cooperación", "VIGILANCIA": "Vigilancia",
                 }),
                 "tags": ", ".join(sorted(tags)),
             })
@@ -192,6 +257,7 @@ def load_longomatch_events(folder_id: str, headers: dict[str, str]) -> pd.DataFr
 
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True).sort_values(
+    events = pd.concat(frames, ignore_index=True).sort_values(
         ["partido", "time_seconds"]
     ).reset_index(drop=True)
+    return _canonical_players(events)

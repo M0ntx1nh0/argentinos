@@ -99,7 +99,7 @@ TRAMO_ORDER = ["0-15","16-30","31-45","45+","46-60","61-75","76-90","90+"]
 
 #### Navegación (session_state)
 
-La navegación usa `st.session_state.page` + botones estilizados como cajitas. **No hay `st.radio`**. Los valores posibles son `"Inicio"`, `"Temporada"`, `"Partido"`, `"Rivales"`.
+La navegación usa `st.session_state.page` + botones estilizados como cajitas. **No hay `st.radio`**. Los valores posibles son `"Inicio"`, `"Temporada"`, `"Partido"`, `"Rivales"`, `"Jugadores"`, `"Física"`.
 
 #### Páginas
 
@@ -132,6 +132,9 @@ Línea 3+: datos (incluyendo filas de sección repetidas que se descartan)
 - La etiqueta de temporada se lee de la fila `"2026-2027 Season"`; no está escrita en el código.
 - **Amistosos (`competicion`):** se detectan si el nombre del archivo contiene "Amistoso" o "Pretemporada", o si el rival está en `AMISTOSOS_CONOCIDOS` (data_loader.py, por temporada). Llevan `jornada = 0`, se excluyen de Inicio/Temporada/Rivales (`split_friendlies`) y solo se ven en Partido.
 - **Vídeo LongoMatch ↔ partido HUDL (`align_video_rivals`):** al cargar, cada CSV de LongoMatch se asigna al partido de HUDL por nombre del rival: igual, prefijo (Fundacion ADF ↔ Fundacion ADF A) o siglas de HUDL (CGD ↔ CD Guadalix, RMB ↔ Rayo Majadahonda B), solo si hay un único candidato. Lo que no empareja aparece en el aviso "Estado del vídeo análisis" (Temporada). Los `.lgm` no se leen: hay que exportar a CSV.
+- **Categorías y etiquetas LongoMatch (`video_loader.py`):** `INICIO 1T`/`INICIO 2T` son marcas de inicio de parte (fase `inicio_parte`, no cuentan como inicio de juego) y fijan los minutos exactos en `_tactical_with_periods`. `Asistencia` → fase `asistencia`. Columnas de etiquetas: `remate` (Remata/No remata), `destino_bp` (primer palo, segundo palo, punto de penalti), `zona_falta` (lateral, frontal, lejana, directa), `rol_transicion` (influencia, cooperación, vigilancia), `jugador` (columna Player). Si el CSV se llama como el de HUDL ("CAdF @ UDA - Todos Atletas - …"), el sufijo se elimina del nombre del rival.
+- **Jugadores:** `jugador` = columna Player (quien da el pase/centro o ejecuta el balón parado); `rematador` = etiqueta con nombre y dorsal ("SOLDATI 20"). `_canonical_players` unifica por dorsal con el nombre más usado ("7-Lucas Appiolaza"); "Player N" se descarta. Página `page_jugadores` (solo partidos oficiales con jugador etiquetado).
+- **Bloques de vídeo nuevos:** `_finishing_quality_block` (% de llegadas con remate, por tipo y partido; conexiones pasador → rematador) y `_set_piece_block` (mapa de destino de córners y faltas a favor/en contra + zona de la falta), en las pestañas "Con balón" y "Balón parado" de Partido y Temporada.
 - **Tipos de gol (`goal_sequence` / `_classify_goals`):** tramo según HUDL; orden dentro del mismo tramo según LongoMatch. Remontada = gol que pone por delante a quien iba perdiendo, siendo el último gol del partido.
 
 **Lo que Hudl NO exporta:** fechas de partido, datos del rival, coordenadas de eventos (sin shot maps ni pass networks).

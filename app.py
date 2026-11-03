@@ -564,6 +564,7 @@ NAV_ITEMS = [
     ("📋", "Temporada"),
     ("🎮", "Partido"),
     ("⚔️", "Rivales"),
+    ("👤", "Jugadores"),
     ("💪", "Física"),
 ]
 
@@ -1975,6 +1976,150 @@ def page_rivales(df: pd.DataFrame, video_df: pd.DataFrame):
     chart(fig_r)
 
 
+# ── Página: Jugadores (LongoMatch) ────────────────────────────────────────────
+def player_table(events: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por jugador del CAdF con su aportación según el etiquetado de vídeo."""
+    own = events[events["equipo"] == "propio"]
+    with_player = own.dropna(subset=["jugador"])
+    count = lambda phase: with_player[with_player["fase"] == phase].groupby("jugador").size()
+    table = pd.DataFrame({
+        "Goles": count("gol"),
+        "Asistencias": count("asistencia"),
+        "Pases a finalización": count("finalizacion"),
+        "Remates tras pase": own.dropna(subset=["rematador"]).groupby("rematador").size(),
+        "Recuperaciones": count("recuperacion"),
+        "Pérdidas": count("perdida"),
+        "Balón parado lanzado": with_player[with_player["fase"].isin(["corner", "tiro_libre"])].groupby("jugador").size(),
+    }).fillna(0).astype(int)
+    played = pd.concat([with_player[["jugador", "rival"]],
+                        own.dropna(subset=["rematador"])[["rematador", "rival"]].rename(columns={"rematador": "jugador"})])
+    table["Partidos"] = played.groupby("jugador")["rival"].nunique()
+    table["Balance robo-pérdida"] = table["Recuperaciones"] - table["Pérdidas"]
+    table["Acciones de gol"] = table["Goles"] + table["Asistencias"] + table["Pases a finalización"] + table["Remates tras pase"]
+    order = (table.index.to_series().str.extract(r"^(\d+)")[0].astype(float))
+    return table.loc[order.sort_values().index]
+
+
+def _count_label(n: int, label: str) -> str:
+    """'1 gol', '3 goles', '1 asistencia', '1 pase a finalización'…"""
+    singular = {"Goles": "gol", "Asistencias": "asistencia", "Recuperaciones": "recuperación",
+                "Pases a finalización": "pase a finalización"}
+    return f"{n} {singular.get(label, label.lower()) if n == 1 else label.lower()}"
+
+
+def _short(name: str) -> str:
+    dorsal, _, rest = name.partition("-")
+    return f"{rest} ({dorsal})" if rest else name
+
+
+def player_insights(table: pd.DataFrame) -> list[tuple[str, str, str]]:
+    if table.empty:
+        return []
+    items = []
+    top = table.sort_values("Acciones de gol", ascending=False).iloc[0]
+    items.append(("pos", f"Más protagonista en ataque: {_short(top.name)}",
+                  f"<b>{top['Acciones de gol']}</b> acciones de gol: {_count_label(top['Goles'], 'Goles')}, "
+                  f"{_count_label(top['Asistencias'], 'Asistencias')}, "
+                  f"{_count_label(top['Pases a finalización'], 'Pases a finalización')} y "
+                  f"{top['Remates tras pase']} remate{'s' if top['Remates tras pase'] != 1 else ''}."))
+    rec = table.sort_values("Recuperaciones", ascending=False).iloc[0]
+    items.append(("pos", f"Mejor recuperador: {_short(rec.name)}",
+                  f"<b>{rec['Recuperaciones']}</b> recuperaciones (balance {rec['Balance robo-pérdida']:+d} con sus pérdidas)."))
+    loss = table.sort_values("Balance robo-pérdida").iloc[0]
+    if loss["Balance robo-pérdida"] < 0:
+        items.append(("warn", f"Más balones perdidos que recuperados: {_short(loss.name)}",
+                      f"{loss['Pérdidas']} pérdidas frente a {loss['Recuperaciones']} recuperaciones. Revisar en vídeo "
+                      f"si son pérdidas por riesgo asumido (zona de finalización) o evitables."))
+    shooters = table[table["Remates tras pase"] > 0]
+    if shooters.empty and table["Pases a finalización"].sum() >= 10:
+        items.append(("neg", "Nadie remata tras pase", "Hay llegadas pero no remates etiquetados."))
+    return items
+
+
+def page_jugadores(video_df: pd.DataFrame):
+    page_header("Jugadores", "Aportación individual según el etiquetado de vídeo (LongoMatch)",
+                kicker="Análisis individual")
+    if video_df.empty or "jugador" not in video_df.columns or video_df["jugador"].dropna().empty:
+        st.info("Los CSV de LongoMatch aún no incluyen jugador en los eventos.")
+        return
+    with_players = video_df.dropna(subset=["jugador"])["rival"].unique().tolist()
+    order = [r for r in video_df["rival"].drop_duplicates() if r in with_players]
+    scope = st.selectbox("Partidos", ["Todos los partidos con jugador etiquetado"] + order, key="jug_scope")
+    events = video_df[video_df["rival"].isin(order)] if scope.startswith("Todos") else video_df[video_df["rival"] == scope]
+    table = player_table(events)
+    st.caption(f"Partidos con jugador etiquetado: {', '.join(order)}. "
+               "«Pases a finalización» = jugador que da el pase o centro (columna Player); "
+               "«Remates tras pase» = jugador que remata (etiqueta con nombre y dorsal).")
+
+    cols = st.columns(4)
+    for col, (label, column, accent) in zip(cols, [
+        ("Goles", "Goles", VERDE), ("Asistencias", "Asistencias", DORADO),
+        ("Recuperaciones", "Recuperaciones", AZUL_CELESTE), ("Pases a finalización", "Pases a finalización", DORADO),
+    ]):
+        top = int(table[column].max()) if len(table) else 0
+        leaders = table.index[table[column] == top].tolist() if top else []
+        if not leaders:
+            value, hint = "—", ""
+        elif len(leaders) == 1:
+            value, hint = _short(leaders[0]), _count_label(top, label)
+        else:
+            value = f"{len(leaders)} empatados"
+            hint = f"{_count_label(top, label)} cada uno: " + ", ".join(_short(n).split(" (")[0] for n in leaders)
+        col.markdown(metric_card(f"Líder · {label.lower()}", f'<span class="cadf-kpi-name">{value}</span>', "",
+                                 hint=hint, accent=accent), unsafe_allow_html=True)
+
+    insight_panel(player_insights(table))
+
+    section("Contribución ofensiva", "Goles, asistencias, pases a finalización y remates de cada jugador.")
+    att = table[table["Acciones de gol"] > 0].sort_values("Acciones de gol")
+    fig = go.Figure()
+    for column, color in [("Goles", VERDE), ("Asistencias", DORADO),
+                          ("Pases a finalización", AZUL_CELESTE), ("Remates tras pase", "#8FA3BF")]:
+        fig.add_trace(go.Bar(name=column, y=[_short(n) for n in att.index], x=att[column], orientation="h",
+                             marker=dict(color=color, line=dict(width=0)),
+                             text=[str(v) if v else "" for v in att[column]], textposition="inside",
+                             textfont=dict(color=AZUL_OSCURO if color != "#8FA3BF" else BLANCO, size=11)))
+    for name, total in zip(att.index, att["Acciones de gol"]):
+        fig.add_annotation(x=total, y=_short(name), text=f"<b>{total}</b>", showarrow=False, xanchor="left",
+                           xshift=6, font=dict(color=BLANCO, size=11))
+    t(fig, height=max(320, 30 * len(att) + 110), barmode="stack", margin=dict(t=30, b=70, l=170, r=40))
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.06, x=0))
+    chart(fig)
+
+    section("Con y sin balón: recuperaciones frente a pérdidas",
+            "A la derecha, balones recuperados; a la izquierda, balones perdidos. Ordenado por balance.")
+    bal = table[(table["Recuperaciones"] + table["Pérdidas"]) > 0].sort_values("Balance robo-pérdida")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Recuperaciones", y=[_short(n) for n in bal.index], x=bal["Recuperaciones"],
+                         orientation="h", marker=dict(color=VERDE), text=bal["Recuperaciones"],
+                         textposition="outside", textfont=dict(color=VERDE, size=11)))
+    fig.add_trace(go.Bar(name="Pérdidas", y=[_short(n) for n in bal.index], x=-bal["Pérdidas"],
+                         orientation="h", marker=dict(color=ROJO), text=bal["Pérdidas"],
+                         textposition="outside", textfont=dict(color=ROJO, size=11),
+                         customdata=bal["Pérdidas"], hovertemplate="%{y}<br>Pérdidas: %{customdata}<extra></extra>"))
+    for name, value in zip(bal.index, bal["Balance robo-pérdida"]):
+        fig.add_annotation(x=max(bal["Recuperaciones"].max(), 1) * 1.28, y=_short(name), text=f"<b>{value:+d}</b>" if value else "<b>0</b>",
+                           showarrow=False, font=dict(color=VERDE if value > 0 else (ROJO if value < 0 else GRIS_MEDIO), size=11))
+    span = max(int(bal["Recuperaciones"].max()), int(bal["Pérdidas"].max()), 1) * 1.4
+    t(fig, height=max(320, 30 * len(bal) + 110), barmode="relative", margin=dict(t=30, b=70, l=170, r=40))
+    fig.update_xaxes(range=[-span, span], zeroline=True, zerolinecolor="rgba(255,255,255,0.4)",
+                     tickvals=[-20, -10, 0, 10, 20, 30, 40, 50], ticktext=["20", "10", "0", "10", "20", "30", "40", "50"])
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.06, x=0))
+    chart(fig)
+
+    section("Tabla completa", "Todos los registros por jugador. Las barras comparan dentro de cada columna.")
+    display = table.reset_index().rename(columns={"index": "Jugador", "jugador": "Jugador"})
+    display = display[["Jugador", "Partidos", "Goles", "Asistencias", "Pases a finalización", "Remates tras pase",
+                       "Recuperaciones", "Pérdidas", "Balance robo-pérdida", "Balón parado lanzado"]]
+    st.dataframe(
+        display, use_container_width=True, hide_index=True,
+        column_config={
+            col: st.column_config.ProgressColumn(col, format="%d", min_value=0, max_value=max(int(display[col].max()), 1))
+            for col in ["Pases a finalización", "Recuperaciones", "Pérdidas"]
+        },
+    )
+
+
 # ── Página: Táctica (LongoMatch) ─────────────────────────────────────────────
 def _tactical_counts(events: pd.DataFrame, order: list[str]) -> pd.Series:
     """Devuelve conteos con categorías vacías visibles para comparar partidos."""
@@ -2202,7 +2347,19 @@ def _tactical_with_periods(events: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     if not candidates.empty:
         second_start = float(timed.loc[candidates.idxmax(), "time_seconds"])
 
-    if second_start is None:
+    # Marcas explícitas del analista (INICIO 1T / INICIO 2T): tiempos exactos.
+    markers = timed[timed["fase"] == "inicio_parte"]
+    m1 = markers[markers["nombre"].str.contains("1T", case=False, na=False)]
+    m2 = markers[markers["nombre"].str.contains("2T", case=False, na=False)]
+    if not m2.empty:
+        first_start = float(m1["time_seconds"].min()) if not m1.empty else first_start
+        second_start = float(m2["time_seconds"].min())
+        timed["match_seconds"] = (timed["time_seconds"] - first_start).where(
+            timed["time_seconds"] < second_start,
+            45 * 60 + timed["time_seconds"] - second_start,
+        ).clip(lower=0)
+        source = "Partes y tramos calculados con las marcas INICIO 1T e INICIO 2T del analista."
+    elif second_start is None:
         elapsed = timed["time_seconds"] - first_start
         timed["match_seconds"] = elapsed.clip(lower=0)
         source = "Tramos calculados desde el inicio del vídeo; falta marcar el inicio del segundo tiempo."
@@ -2294,6 +2451,180 @@ def _tactical_transition_minimap(transitions: pd.DataFrame, dimension: str, titl
     fig.update_xaxes(range=[-2, 107], visible=False, fixedrange=True)
     fig.update_yaxes(range=[-2, 78], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
     return fig
+
+
+def _remate_share(events: pd.DataFrame) -> tuple[int, int]:
+    """(acciones con etiqueta Remata/No remata, cuántas acaban en remate)."""
+    tagged = events["remate"].dropna() if "remate" in events.columns else pd.Series(dtype=str)
+    return len(tagged), int((tagged == "Remata").sum())
+
+
+def _finishing_quality_block(events: pd.DataFrame, rival_label: str, per_match: bool = False):
+    """¿Cuántas llegadas acaban en remate? Por equipo, tipo de llegada y, en temporada, por partido."""
+    if "remate" not in events.columns or events["remate"].dropna().empty:
+        st.caption("Calidad de finalización: este vídeo aún no lleva las etiquetas Remata / No remata.")
+        return
+    fin = events[events["fase"] == "finalizacion"]
+    own, opp = fin[fin["equipo"] == "propio"], fin[fin["equipo"] == "rival"]
+    section("Calidad de la finalización",
+            "De las llegadas a zona de finalización, ¿cuántas terminan en remate? "
+            "Solo cuenta acciones etiquetadas con Remata / No remata.")
+    n_own, r_own = _remate_share(own)
+    n_opp, r_opp = _remate_share(opp)
+    cols = st.columns(3)
+    cols[0].markdown(metric_card("Llegadas CAdF que acaban en remate",
+                                 f"{r_own / n_own * 100:.0f}" if n_own else "—", "%" if n_own else "",
+                                 hint=f"{r_own} de {n_own} llegadas etiquetadas", accent=AZUL_CELESTE),
+                     unsafe_allow_html=True)
+    cols[1].markdown(metric_card(f"Llegadas de {rival_label} con remate",
+                                 f"{r_opp / n_opp * 100:.0f}" if n_opp else "—", "%" if n_opp else "",
+                                 hint=f"{r_opp} de {n_opp} llegadas etiquetadas", accent=ROJO),
+                     unsafe_allow_html=True)
+    shooters = own.dropna(subset=["rematador"])["rematador"].value_counts() if "rematador" in own else pd.Series()
+    cols[2].markdown(metric_card("Rematador más buscado",
+                                 f'<span class="cadf-kpi-name">{shooters.index[0].split("-", 1)[-1]}</span>'
+                                 if len(shooters) else "—",
+                                 hint=f"{shooters.iloc[0]} remates tras pase" if len(shooters) else "sin etiqueta de rematador",
+                                 accent=DORADO), unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        tipos = ["Centro", "Pase filtrado", "Remate"]
+        tagged = own.dropna(subset=["remate"])
+        table = pd.crosstab(tagged["tipo_llegada"], tagged["remate"]).reindex(
+            index=tipos, columns=["Remata", "No remata"], fill_value=0)
+        fig = go.Figure()
+        fig.add_trace(depth_bar(VERDE, "Acaba en remate", tipos, table["Remata"], pos="inside"))
+        fig.add_trace(depth_bar("#5B6B84", "No llega a rematar", tipos, table["No remata"], pos="inside"))
+        pct = [f"{r / (r + n) * 100:.0f}% remata" if r + n else "" for r, n in zip(table["Remata"], table["No remata"])]
+        for x, total, label in zip(tipos, table.sum(axis=1), pct):
+            fig.add_annotation(x=x, y=total, text=f"<b>{label}</b>", showarrow=False, yshift=12,
+                               font=dict(color=BLANCO, size=11, family="Inter"))
+        t(fig, height=320, barmode="stack", title="CAdF · ¿qué tipo de llegada acaba en remate?",
+          margin=dict(t=48, b=72, l=36, r=16))
+        fig.update_yaxes(range=[0, max(int(table.sum(axis=1).max()), 1) * 1.25])
+        fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.14, x=0))
+        chart(fig)
+    with c2:
+        if per_match:
+            rows = []
+            for rival, ev in events.groupby("rival", sort=False):
+                a, b = _remate_share(ev[(ev["fase"] == "finalizacion") & (ev["equipo"] == "propio")])
+                c, d = _remate_share(ev[(ev["fase"] == "finalizacion") & (ev["equipo"] == "rival")])
+                if a or c:
+                    rows.append((rival, b / a * 100 if a else 0, d / c * 100 if c else 0))
+            data = pd.DataFrame(rows, columns=["rival", "cadf", "rival_pct"])
+            fig = go.Figure()
+            fig.add_trace(depth_bar(AZUL_CELESTE, "CAdF", data["rival"], data["cadf"].round(0),
+                                    text=[f"{v:.0f}%" for v in data["cadf"]]))
+            fig.add_trace(depth_bar(ROJO, "Rival", data["rival"], data["rival_pct"].round(0),
+                                    text=[f"{v:.0f}%" for v in data["rival_pct"]]))
+            t(fig, height=320, barmode="group", title="% de llegadas que acaban en remate, por partido",
+              margin=dict(t=48, b=72, l=36, r=16))
+            fig.update_yaxes(range=[0, 110], ticksuffix="%")
+        else:
+            pairs = (own.dropna(subset=["jugador", "rematador"])
+                     .groupby(["jugador", "rematador"]).size().sort_values(ascending=True).tail(8))
+            fig = go.Figure()
+            if len(pairs):
+                labels = [f"{p.split('-', 1)[-1]} → {r.split('-', 1)[-1]}" for p, r in pairs.index]
+                fig.add_trace(go.Bar(x=pairs.values, y=labels, orientation="h", marker=dict(color=DORADO),
+                                     text=pairs.values, textposition="outside",
+                                     textfont=dict(color=BLANCO, size=12)))
+            else:
+                fig.add_annotation(text="Sin etiquetas de rematador en este partido", showarrow=False,
+                                   x=0.5, y=0.5, xref="paper", yref="paper", font=dict(color=GRIS_MEDIO))
+            t(fig, height=320, title="Conexiones pasador → rematador", margin=dict(t=48, b=36, l=150, r=30))
+        fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.14, x=0))
+        chart(fig)
+
+
+SET_PIECE_TARGETS = ["Primer palo", "Punto de penalti", "Segundo palo"]
+
+
+def _set_piece_map(events: pd.DataFrame, title: str, rgb: str) -> go.Figure:
+    """Área rival vista de frente: a qué zona se envían córners y faltas y cuántos acaban en remate."""
+    fig = go.Figure()
+    t(fig, height=380, title=title, margin=dict(t=48, b=16, l=10, r=10))
+    # Área grande, área pequeña, portería y punto de penalti (en metros, portería arriba).
+    fig.add_shape(type="rect", x0=-20.16, x1=20.16, y0=0, y1=16.5, line=dict(color="rgba(255,255,255,0.55)", width=1.5),
+                  fillcolor="rgba(40,91,50,0.55)", layer="below")
+    fig.add_shape(type="rect", x0=-9.16, x1=9.16, y0=0, y1=5.5, line=dict(color="rgba(255,255,255,0.45)", width=1.2),
+                  layer="below")
+    fig.add_shape(type="rect", x0=-3.66, x1=3.66, y0=-1.6, y1=0, line=dict(color=BLANCO, width=2.5),
+                  fillcolor="rgba(255,255,255,0.12)")
+    fig.add_shape(type="circle", x0=-0.35, x1=0.35, y0=10.65, y1=11.35, fillcolor=BLANCO, line=dict(width=0))
+    positions = {"Primer palo": (-11, 4.2), "Punto de penalti": (0, 10.8), "Segundo palo": (11, 4.2)}
+    kinds = [("corner", "Córner", "circle", -2.7), ("tiro_libre", "Falta", "diamond", 2.7)]
+    maximum = 1
+    for phase, _, _, _ in kinds:
+        counts = events[events["fase"] == phase]["destino_bp"].value_counts()
+        maximum = max(maximum, int(counts.max()) if len(counts) else 1)
+    for phase, label, symbol, dx in kinds:
+        sel = events[events["fase"] == phase]
+        xs, ys, sizes, texts, hovers, colors = [], [], [], [], [], []
+        for target in SET_PIECE_TARGETS:
+            part = sel[sel["destino_bp"] == target]
+            if part.empty:
+                continue
+            n, shots = len(part), int((part["remate"] == "Remata").sum())
+            tagged = int(part["remate"].notna().sum())
+            x, y = positions[target]
+            xs.append(x + dx); ys.append(y); texts.append(str(n))
+            sizes.append(22 + 22 * n / maximum)
+            colors.append(f"rgba({rgb},{0.55 + 0.45 * n / maximum:.2f})" if phase == "corner" else
+                          f"rgba(201,168,76,{0.55 + 0.45 * n / maximum:.2f})")
+            hovers.append(f"<b>{label} · {target}</b><br>{n} envíos"
+                          + (f"<br>{shots} de {tagged} acaban en remate" if tagged else ""))
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers+text", name=label, text=texts,
+                                 textfont=dict(color=BLANCO, size=12, family="Inter"),
+                                 marker=dict(size=sizes, symbol=symbol, color=colors,
+                                             line=dict(color="rgba(255,255,255,0.8)", width=1.5)),
+                                 hovertext=hovers, hoverinfo="text"))
+    for target, (x, y) in positions.items():
+        fig.add_annotation(x=x, y=y + 3.4, text=f"<b>{target}</b>", showarrow=False,
+                           font=dict(color=GRIS_MEDIO, size=11, family="Inter"))
+    fig.update_xaxes(range=[-21.5, 21.5], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[19, -2.5], visible=False, fixedrange=True)
+    fig.update_layout(legend=dict(orientation="h", y=0.02, x=0.02, yanchor="bottom"))
+    return fig
+
+
+def _set_piece_block(events: pd.DataFrame, rival_label: str):
+    """Destino de córners y faltas, a favor y en contra, y desde dónde se sacan las faltas."""
+    if "destino_bp" not in events.columns or events["destino_bp"].dropna().empty:
+        return
+    section("Mapa de balón parado",
+            "Zona a la que se envían córners (●) y faltas (◆): tamaño = nº de envíos. "
+            "Pasa el ratón para ver cuántos acaban en remate.")
+    bp = events[events["fase"].isin(["corner", "tiro_libre"])]
+    c1, c2 = st.columns(2)
+    with c1:
+        chart(_set_piece_map(bp[bp["equipo"] == "propio"], "A favor · CAdF", "106,175,230"))
+    with c2:
+        chart(_set_piece_map(bp[bp["equipo"] == "rival"], f"En contra · {rival_label}", "232,93,117"))
+
+    zones = ["Directa", "Frontal", "Lateral", "Lejana"]
+    fk = bp[bp["fase"] == "tiro_libre"]
+    fig = go.Figure()
+    for team, label, color in [("propio", "CAdF", AZUL_CELESTE), ("rival", rival_label, ROJO)]:
+        counts = fk[fk["equipo"] == team]["zona_falta"].value_counts().reindex(zones, fill_value=0)
+        fig.add_trace(depth_bar(color, label, zones, counts.values))
+    t(fig, height=280, barmode="group", title="Faltas a balón parado · desde dónde se sacan",
+      margin=dict(t=48, b=72, l=36, r=16))
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.16, x=0))
+    chart(fig)
+
+    items = []
+    for team, who in [("propio", "CAdF"), ("rival", rival_label)]:
+        sel = bp[(bp["equipo"] == team) & bp["destino_bp"].notna()]
+        if len(sel) >= 3:
+            top = sel["destino_bp"].value_counts()
+            n, shots = _remate_share(sel)
+            items.append(("info" if team == "propio" else "warn", f"{who}: envío preferido al {top.index[0].lower()}",
+                          f"{top.iloc[0]} de {len(sel)} balones parados con destino etiquetado."
+                          + (f" Solo <b>{shots} de {n}</b> acaban en remate." if n else "")))
+    insight_panel(items)
 
 
 def _render_tactical_match_summary(video_df: pd.DataFrame, rival: str):
@@ -2436,6 +2767,7 @@ def _render_tactical_match_summary(video_df: pd.DataFrame, rival: str):
         fig.update_yaxes(title="Eventos")
         chart(fig)
         chart(_tactical_heatmap(own[own["fase"] == "finalizacion"], "Campograma de finalizaciones CAdF"))
+        _finishing_quality_block(events, rival)
 
     with tab_without_ball:
         c1, c2 = st.columns(2)
@@ -2527,6 +2859,7 @@ def _render_tactical_match_summary(video_df: pd.DataFrame, rival: str):
           title="Acciones a balón parado")
         fig.update_yaxes(title="Acciones")
         chart(fig)
+        _set_piece_block(events, rival)
 
     st.caption(
         "Fuente: etiquetado LongoMatch. Las ventanas de 20 segundos usan el reloj de vídeo; "
@@ -2596,6 +2929,7 @@ def _render_tactical_season_summary(video_df: pd.DataFrame, hudl_matches: int):
             own[own["fase"] == "finalizacion"],
             "Campograma de finalizaciones CAdF · acumulado LongoMatch",
         ))
+        _finishing_quality_block(video_df, "rivales", per_match=True)
 
     with tab_without_ball:
         c1, c2 = st.columns(2)
@@ -2637,6 +2971,7 @@ def _render_tactical_season_summary(video_df: pd.DataFrame, hudl_matches: int):
           title="Balón parado · acumulado")
         fig.update_yaxes(title="Acciones")
         chart(fig)
+        _set_piece_block(video_df, "Rivales")
 
     if tactical_matches != hudl_matches:
         st.caption(
@@ -4067,6 +4402,7 @@ def inject_css():
     .cadf-kpi-value {{ color: {BLANCO}; font-size: 1.95rem; font-weight: 800; line-height: 1.05;
                        font-variant-numeric: tabular-nums; }}
     .cadf-kpi-value span {{ font-size: 0.95rem; color: {AZUL_CELESTE}; margin-left: 2px; font-weight: 600; }}
+    .cadf-kpi-name {{ font-size: 1.15rem; font-weight: 800; line-height: 1.25; display: inline-block; }}
     .cadf-kpi-delta {{ font-size: 0.74rem; font-weight: 700; margin-top: 6px; }}
     .cadf-kpi-hint {{ color: {GRIS_MEDIO}; font-size: 0.72rem; margin-top: 5px; line-height: 1.35; opacity: 0.85; }}
 
@@ -4262,6 +4598,7 @@ def main():
     elif page == "Temporada": page_temporada(df_oficial, video_oficial)
     elif page == "Partido":   page_partido(df, video_df)
     elif page == "Rivales":   page_rivales(df_oficial, video_oficial)
+    elif page == "Jugadores": page_jugadores(video_oficial)
     elif page == "Física":    page_fisica()
 
 
