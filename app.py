@@ -3459,6 +3459,12 @@ def _report_chip(source: str, files: list[str], checked: bool, played: bool) -> 
     return f'<span class="cadf-report {tone}" title="{title}">{source} <b>{status}</b></span>'
 
 
+def _render_calendar_match_list(cards: list[str], label: str):
+    focus = ' tabindex="0"' if len(cards) > 10 else ""
+    st.markdown(f'<div class="cadf-match-list" role="region" aria-label="{label}"{focus}>'
+                + "".join(cards) + "</div>", unsafe_allow_html=True)
+
+
 def _render_season_calendar(calendar: pd.DataFrame, results: pd.DataFrame, hudl: pd.DataFrame | None,
                             video: pd.DataFrame | None, sources: dict[str, dict[int, list[str]]]):
     pending = calendar.loc[calendar["Resultado"].eq("")].sort_values(
@@ -3499,11 +3505,14 @@ def _render_season_calendar(calendar: pd.DataFrame, results: pd.DataFrame, hudl:
         pos_color = AZUL_CELESTE if pd.notna(possession) and possession >= avg_pos else GRIS_MEDIO
         pas_color = (VERDE if passing >= avg_pas else ROJO) if pd.notna(passing) else GRIS_MEDIO
         featured = " cadf-row-next" if index == next_match else ""
+        condition = match["Condición"]
+        badge_class, badge_icon = {"Local": ("home", "⌂"), "Visitante": ("away", "↗")}.get(condition, ("", ""))
         rows[index] = (
             f'<div class="cadf-row{featured}" style="--res:{color}">'
             f'<div class="cadf-row-j">J{jornada}</div>'
             f'<div class="cadf-row-rival">{_crest_html(match["ID rival RFFM"])}'
-            f'<div>{escape(match["Rival"])} <span class="cadf-tag">{escape(match["Condición"])}</span>'
+            f'<div>{escape(match["Rival"])} <span class="cadf-tag cadf-match-venue {badge_class}">'
+            f'<span aria-hidden="true">{badge_icon}</span>{escape(condition)}</span>'
             f'<small>{escape(date + venue)}</small></div></div>'
             f'<div class="cadf-row-score">{score}</div><div>{outcome}</div>'
             f'<div class="cadf-row-stat" style="color:{pos_color}">{pos_text}<small>posesión</small></div>'
@@ -3528,10 +3537,10 @@ def _render_season_calendar(calendar: pd.DataFrame, results: pd.DataFrame, hudl:
         if results.empty:
             st.caption("Aún no hay resultados publicados.")
         else:
-            st.markdown("".join(rows[index] for index in reversed(results.index)), unsafe_allow_html=True)
+            _render_calendar_match_list([rows[index] for index in reversed(results.index)], "Partidos jugados")
     with pending_tab:
         if remaining:
-            st.markdown("".join(rows[index] for index in remaining), unsafe_allow_html=True)
+            _render_calendar_match_list([rows[index] for index in remaining], "Partidos por jugar")
         else:
             st.caption("No hay más partidos pendientes.")
 
@@ -5206,6 +5215,16 @@ def inject_css():
     .cadf-insight-body b {{ color: {BLANCO}; }}
 
     /* ── Filas de resultados ── */
+    .cadf-match-list {{
+        --match-height: 82px;
+        --match-gap: 6px;
+        display: grid; grid-auto-rows: var(--match-height); gap: var(--match-gap);
+        max-height: calc(10 * var(--match-height) + 9 * var(--match-gap));
+        overflow-y: auto; scrollbar-color: {AZUL_CLARO} {AZUL_OSCURO};
+        border-radius: 11px;
+    }}
+    .cadf-match-list > .cadf-row {{ margin-bottom: 0; }}
+    .cadf-match-list:focus-visible {{ outline: 2px solid {AZUL_CELESTE}; outline-offset: 3px; }}
     .cadf-row {{
         display: grid; grid-template-columns: 36px minmax(160px, 1fr) 64px 32px repeat(3, minmax(62px, .22fr)) 155px;
         align-items: center; gap: 8px; padding: 12px 14px; margin-bottom: 6px; border-radius: 11px;
@@ -5219,6 +5238,13 @@ def inject_css():
                           text-transform: uppercase; }}
     .cadf-row-j {{ color: {DORADO}; font-weight: 800; font-size: 0.85rem; }}
     .cadf-row-rival, .cadf-standing-team {{ display: flex; align-items: center; gap: 10px; font-weight: 700; }}
+    .cadf-match-venue {{
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+        border-radius: 6px; font-weight: 800; white-space: nowrap;
+    }}
+    .cadf-match-venue.home {{ background: #8ad6f3; color: #082c40; }}
+    .cadf-match-venue.away {{ background: #e3ccff; color: #3c2156; }}
+    .cadf-match-venue > span {{ font-size: 0.9rem; line-height: 1; }}
     .cadf-row-rival small {{ display: block; color: {GRIS_MEDIO}; font-size: 0.72rem; font-weight: 400; }}
     .cadf-row-next .cadf-row-rival small {{ color: #e2eaf7; font-size: 0.83rem; margin-top: 2px; }}
     .cadf-medallion {{ display: inline-block; width: 39px; height: 39px; flex: 0 0 39px;
@@ -5308,9 +5334,16 @@ def inject_css():
         .cadf-hero-aside {{ align-items: flex-start; }}
     }}
     @media (max-width: 1100px) {{
+        .cadf-match-list {{ --match-height: 100px; }}
         .cadf-row {{ grid-template-columns: 30px minmax(0, 1fr) 64px 30px; }}
         .cadf-row-stat {{ display: none; }}
         .cadf-row-reports {{ grid-column: 2 / -1; display: flex; flex-wrap: wrap; }}
+    }}
+    @media (max-width: 640px) {{
+        .cadf-match-list {{ --match-height: 144px; }}
+        .cadf-row {{ grid-template-columns: 26px minmax(0, 1fr) 30px; gap: 4px 8px; padding-inline: 10px; }}
+        .cadf-row-rival {{ grid-column: 2 / -1; }}
+        .cadf-row-score {{ grid-column: 2; justify-self: start; }}
     }}
 
     /* ── Menú lateral: página activa ── */
