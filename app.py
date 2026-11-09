@@ -3694,16 +3694,20 @@ def page_temporada():
                 status, title, detail, finished = last_sync
                 alert = {"error": st.error, "success": st.success, "info": st.info}[status]
                 alert(f"**{title}** · {finished}\n\n{detail}")
-        with st.expander("Preparar actualización de la RFFM"):
-            st.caption("Descarga los archivos oficiales y sustituye los CSV en «Calendario y clasificación». "
-                       "Sube a «Escudos» las imágenes nuevas y pulsa «Actualizar datos de Drive».")
-            if st.button("Descargar datos RFFM en local"):
+        with st.expander("Descarga manual de datos RFFM"):
+            st.caption("Genera el calendario, la clasificación y su historial para descargarlos como CSV.")
+            if RFFM_DRIVE_WRITE_ENABLED:
+                st.caption("Para guardar los datos directamente en Drive, usa «Actualizar RFFM y guardar en Drive».")
+            else:
+                st.caption("Para actualizar los datos publicados, sustituye los tres CSV en «Calendario y clasificación» "
+                           "de Drive y pulsa «Actualizar datos de Drive» en el menú lateral.")
+            if st.button("Generar CSV de la RFFM", type="primary"):
                 try:
-                    with st.spinner("Descargando calendario, clasificación, historial y escudos..."):
+                    with st.spinner("Preparando los CSV de la RFFM..."):
                         history_file = _drive_rffm_bytes(RFFM_DATA_FOLDER, rffm.HISTORY_FILE.name)
                         with _rffm_refresh_lock():
-                            matches, teams, crests = rffm.refresh_local(io.BytesIO(history_file) if history_file else rffm.HISTORY_FILE)
-                    st.success(f"Guardados en local · {matches} jornadas · {teams} equipos · {crests} escudos")
+                            matches, teams, _ = rffm.refresh_local(io.BytesIO(history_file) if history_file else rffm.HISTORY_FILE)
+                    st.success(f"CSV listos para descargar · {matches} jornadas · {teams} equipos")
                     st.session_state["rffm_draft_ready"] = True
                 except (requests.RequestException, OSError, ValueError, KeyError, TypeError):
                     st.warning("No se pudo completar la descarga de la RFFM.")
@@ -5030,7 +5034,7 @@ def inject_css():
         letter-spacing: 0.01em;
     }}
 
-    /* Acción principal: exportar el informe GPS */
+    /* Botones de acción principales */
     button[kind="primary"] {{
         background: linear-gradient(135deg, {DORADO} 0%, #af8730 100%) !important;
         color: {AZUL_OSCURO} !important;
