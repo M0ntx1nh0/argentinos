@@ -2068,7 +2068,12 @@ def _render_player_table(table: pd.DataFrame):
     display = table[columns].rename_axis("Jugador").reset_index()
     scales = {column: max(int(display[column].max()), 1)
               for column in ("Pases a finalización", "Recuperaciones", "Pérdidas")}
-    headers = "".join(f'<th scope="col">{escape(column)}</th>' for column in display.columns)
+    headers = []
+    for index, column in enumerate(display.columns):
+        order = ' aria-sort="ascending"' if index == 0 else ""
+        arrow = "↑" if index == 0 else "↕"
+        headers.append(f'<th scope="col"{order}><button type="button">{escape(column)}'
+                       f'<span aria-hidden="true">{arrow}</span></button></th>')
     rows = []
     for name, *values in display.itertuples(index=False, name=None):
         cells = []
@@ -2085,11 +2090,43 @@ def _render_player_table(table: pd.DataFrame):
                 cells.append(f'<td class="cadf-player-value{tone}">{value}</td>')
         rows.append(f'<tr><th scope="row">{escape(name)}</th>{"".join(cells)}</tr>')
 
-    st.markdown(
+    st.html(
         '<div class="cadf-player-table-wrap" role="region" aria-label="Tabla completa de jugadores" tabindex="0">'
-        '<table class="cadf-player-table" aria-label="Registros por jugador">'
-        f'<thead><tr>{headers}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
-        unsafe_allow_html=True,
+        '<table id="cadf-player-table" class="cadf-player-table" aria-label="Registros por jugador">'
+        f'<thead><tr>{"".join(headers)}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        """
+        <script>
+        (() => {
+            const table = document.getElementById("cadf-player-table");
+            const body = table.tBodies[0];
+            const headers = Array.from(table.tHead.rows[0].cells);
+            const comparePlayers = new Intl.Collator("es", { numeric: true, sensitivity: "base" });
+
+            table.tHead.onclick = (event) => {
+                const button = event.target.closest("button");
+                if (!button) return;
+                const header = button.closest("th");
+                const column = header.cellIndex;
+                const ascending = header.getAttribute("aria-sort") !== "ascending";
+                const rows = Array.from(body.rows);
+                rows.sort((left, right) => {
+                    const a = left.cells[column].textContent.trim();
+                    const b = right.cells[column].textContent.trim();
+                    const difference = column === 0 ? comparePlayers.compare(a, b) : Number(a) - Number(b);
+                    return ascending ? difference : -difference;
+                });
+                body.append(...rows);
+                for (const cell of headers) {
+                    cell.removeAttribute("aria-sort");
+                    cell.querySelector("span").textContent = "↕";
+                }
+                header.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+                button.querySelector("span").textContent = ascending ? "↑" : "↓";
+            };
+        })();
+        </script>
+        """,
+        unsafe_allow_javascript=True,
     )
     st.download_button("Descargar tabla de jugadores (CSV)", display.to_csv(index=False).encode("utf-8-sig"),
                        file_name="jugadores.csv", mime="text/csv")
@@ -2171,7 +2208,7 @@ def page_jugadores(video_df: pd.DataFrame):
     fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.06, x=0))
     chart(fig)
 
-    section("Tabla completa", "Todos los registros por jugador. Las barras comparan dentro de cada columna.")
+    section("Tabla completa", "Pulsa un encabezado para ordenar la tabla. Las barras comparan dentro de cada columna.")
     _render_player_table(table)
 
 
@@ -5395,9 +5432,19 @@ def inject_css():
         font-size: 0.83rem; line-height: 1.25; text-align: center; font-weight: 700;
     }}
     .cadf-player-table thead th {{
-        position: sticky; top: 0; z-index: 2; background: #22406c; color: {GRIS_MEDIO};
+        position: sticky; top: 0; z-index: 2; padding: 0; background: #22406c; color: {GRIS_MEDIO};
         font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
     }}
+    .cadf-player-table thead button {{
+        display: flex; justify-content: center; align-items: center; gap: 6px;
+        width: 100%; padding: 9px 10px; border: 0; border-radius: inherit;
+        background: transparent; color: inherit; font: inherit; letter-spacing: inherit;
+        text-transform: inherit; text-align: inherit; cursor: pointer;
+    }}
+    .cadf-player-table thead th:first-child button {{ justify-content: flex-start; }}
+    .cadf-player-table thead button:hover {{ background: rgba(106,175,230,0.16); }}
+    .cadf-player-table thead button:focus-visible {{ outline: 2px solid {AZUL_CELESTE}; outline-offset: -3px; }}
+    .cadf-player-table thead th[aria-sort] button span {{ color: {DORADO}; }}
     .cadf-player-table th:first-child {{ position: sticky; left: 0; text-align: left; min-width: 150px; }}
     .cadf-player-table tbody th {{ z-index: 1; }}
     .cadf-player-table thead th:first-child {{ z-index: 3; }}
