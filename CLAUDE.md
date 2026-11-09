@@ -6,10 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Proyecto
 
-Dashboard de análisis de rendimiento para **Club Argentino (CAdF)** — temporada 2025-2026.
+Dashboard de análisis de rendimiento para **Club Argentino (CAdF)** — temporada 2026-2027.
 Desarrollado por Ramón Codesido · Sport Data Campus.
 
-Stack: **Python + Streamlit + Plotly**. Sin base de datos — los datos viven en CSVs de Hudl Titan en `data/`.
+Stack: **Python + Streamlit + Plotly**. La app lee los datos de la temporada desde Google Drive.
 
 ---
 
@@ -20,7 +20,7 @@ Stack: **Python + Streamlit + Plotly**. Sin base de datos — los datos viven en
 source venv/bin/activate
 
 # Arrancar la app
-venv/bin/streamlit run app.py
+venv/bin/streamlit run app.py --server.address 127.0.0.1
 
 # Verificar sintaxis sin arrancar
 venv/bin/python -c "import py_compile; py_compile.compile('app.py', doraise=True)"
@@ -39,7 +39,7 @@ git add app.py data_loader.py && git commit -m "mensaje" && git push
 ### Flujo de datos
 
 ```
-data/*.csv (Hudl Titan exports)
+Drive / Partidos (CSV de HUDL)
     → data_loader.load_all()
     → DataFrame "largo": 1 fila por (partido × nivel × tramo)
     → app.py consume el df en cada página
@@ -47,7 +47,7 @@ data/*.csv (Hudl Titan exports)
 
 ### data_loader.py
 
-- **`load_all()`** — punto de entrada único. Lee todos los `.csv` de `data/`, los parsea y concatena.
+- **`load_all()`** — lee, parsea y concatena los CSV de HUDL en la carpeta `Partidos` de Drive.
 - **`_parse_csv(filepath)`** — parsea un CSV individual. El formato Hudl tiene: título en línea 1, cabecera en línea 2, separadores de columna con nombre `"0"`, filas de sección repetidas ("Por Parte", "Por Minutos").
 - **`_clean_value(val, col_interno)`** — normaliza valores: porcentajes → float, `mm:ss` → minutos decimales, coma decimal española → punto. **Importante:** `"0"` es `None` salvo en columnas de `ZERO_IS_VALID` (goles_enc, tiros, etc.), donde es un resultado real.
 
@@ -121,10 +121,9 @@ Línea 2:  cabecera de columnas (con columnas "0" separadoras)
 Línea 3+: datos (incluyendo filas de sección repetidas que se descartan)
 ```
 
-**Partidos actuales** (`data/`):
-- `CAdF vs AED` → 2-2 (GF=2, GE=2 en Hudl)
-- `CAdF vs CSE` → 3-0 (GF=3, GE=0 en Hudl)
-- `CAdF vs RFC` → 2-0 (GF=2, GE=0 en Hudl)
+**Datos federativos**. Los tres CSV de calendario, clasificación e historial se leen de `Calendario y clasificación` en Drive. Los PNG se leen de `Escudos`. Las copias locales de `data/` y `output/` se excluyen de Git.
+
+**Publicación en Drive**. El botón de sincronización se habilita al arrancar en una dirección local con `RFFM_DRIVE_WRITE_ENABLED=1` en `.env`. Actualiza los tres CSV existentes con la cuenta de servicio del club.
 
 **Añadir un partido nuevo:** subir el CSV de Hudl a la carpeta `Partidos` de la temporada en Drive.
 - **Orden cronológico (`jornada`):** fecha del nombre del archivo si la lleva (`2026-09-06` o `06-09-2026`); si no, la fecha de subida a Drive. Subir los partidos en orden o incluir la fecha en el nombre.
@@ -134,6 +133,7 @@ Línea 3+: datos (incluyendo filas de sección repetidas que se descartan)
 - **Vídeo LongoMatch ↔ partido HUDL (`align_video_rivals`):** al cargar, cada CSV de LongoMatch se asigna al partido de HUDL por nombre del rival: igual, prefijo (Fundacion ADF ↔ Fundacion ADF A) o siglas de HUDL (CGD ↔ CD Guadalix, RMB ↔ Rayo Majadahonda B), solo si hay un único candidato. Lo que no empareja aparece en el aviso "Estado del vídeo análisis" (Temporada). Los `.lgm` no se leen: hay que exportar a CSV.
 - **Categorías y etiquetas LongoMatch (`video_loader.py`):** `INICIO 1T`/`INICIO 2T` son marcas de inicio de parte (fase `inicio_parte`, no cuentan como inicio de juego) y fijan los minutos exactos en `_tactical_with_periods`. `Asistencia` → fase `asistencia`. Columnas de etiquetas: `remate` (Remata/No remata), `destino_bp` (primer palo, segundo palo, punto de penalti), `zona_falta` (lateral, frontal, lejana, directa), `rol_transicion` (influencia, cooperación, vigilancia), `jugador` (columna Player). Si el CSV se llama como el de HUDL ("CAdF @ UDA - Todos Atletas - …"), el sufijo se elimina del nombre del rival.
 - **Jugadores:** `jugador` = columna Player (quien da el pase/centro o ejecuta el balón parado); `rematador` = etiqueta con nombre y dorsal ("SOLDATI 20"). `_canonical_players` unifica por dorsal con el nombre más usado ("7-Lucas Appiolaza"); "Player N" se descarta. Página `page_jugadores` (solo partidos oficiales con jugador etiquetado).
+- **Criterios del analista (nov. 2026):** Finalización = toda llegada al último tercio. En llegadas de tipo «Remate», Player es quien dispara (`rematador`), no hay pasador; en centro/pase filtrado Player = `pasador` y la etiqueta con nombre = `rematador` (solo si alguien remata). Generada = robo/pérdida provocada por presión o quite; No generada = error del rival / balón regalado. PTP = presión tras pérdida. Carriles del rival desde su punto de vista, salvo en transiciones defensivas (referencia CAdF). Balón parado: `ejecucion_bp` = Corto / Remate directo / Al área; solo «Al área» lleva destino. `tagging_review` lista lo que parece incompleto (expander en Temporada).
 - **Remate inferido:** una finalización con tipo de llegada «Remate» sin etiqueta Remata/No remata se cuenta como «Remata» (`remate_inferido = True`). El bloque de calidad de finalización muestra siempre el total de llegadas (igual que el campograma) y cuántas faltan por etiquetar.
 - **Bloques de vídeo nuevos:** `_finishing_quality_block` (% de llegadas con remate, por tipo y partido; conexiones pasador → rematador) y `_set_piece_block` (mapa de destino de córners y faltas a favor/en contra + zona de la falta), en las pestañas "Con balón" y "Balón parado" de Partido y Temporada.
 - **Tipos de gol (`goal_sequence` / `_classify_goals`):** tramo según HUDL; orden dentro del mismo tramo según LongoMatch. Remontada = gol que pone por delante a quien iba perdiendo, siendo el último gol del partido.

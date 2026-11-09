@@ -79,7 +79,7 @@ SECTION_HEADERS = {"Partidos", "Por Parte", "Por Minutos"}
 
 # Columnas donde "0" es un dato válido (no ausencia de dato)
 ZERO_IS_VALID = {"goles_enc", "goles", "tiros", "tiros_puerta", "centros",
-                 "faltas", "jugadas_set", "paradas", "tap", "pl", "pa0"}
+                 "faltas", "jugadas_set", "paradas", "tap", "pl", "pa0", "cadenas_6mas"}
 
 
 def _clean_value(val, col_interno: str = ""):
@@ -128,6 +128,9 @@ FRIENDLY_WORDS = ("amistoso", "pretemporada")
 AMISTOSOS_CONOCIDOS = {
     "2026-2027": {"adtorrejoncf"},
 }
+RIVALES_COPA = {
+    "2026-2027": {"anc", "adnuevacastilla", "nuevacastilla"},
+}
 
 
 def _norm(value: str) -> str:
@@ -151,9 +154,16 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
     match = (re.match(r"CAdF\s+(vs|@)\s+(.+?)(?:\s+—|$)", title)
              or re.match(r"CAdF\s+(vs|@)\s+(.+?)(?:\s+—|\.csv$|$)", filename))
     rival = _strip_friendly_words(match.group(2)) if match else "Desconocido"
-    season = re.search(r"(\d{4}-\d{4}) Season", content)
+    season_match = re.search(r"(\d{4}-\d{4}) Season", content)
+    season = season_match.group(1) if season_match else ""
+    rival_key = _norm(rival)
     friendly = (any(word in filename.lower() for word in FRIENDLY_WORDS)
-                or _norm(rival) in AMISTOSOS_CONOCIDOS.get(season.group(1) if season else "", set()))
+                or rival_key in AMISTOSOS_CONOCIDOS.get(season, set()))
+    known_cup = rival_key in RIVALES_COPA.get(season, set())
+    cup = known_cup or bool(re.search(r"(?:^|[\W_])copa(?=$|[\W_])", filename, re.IGNORECASE))
+    competition = "Amistoso" if friendly else "Copa RFFM" if cup else "Oficial"
+    if known_cup:
+        rival = "A.D. Nueva Castilla"
     # Hudl nombra "CAdF @ Rival" los partidos fuera de casa y "CAdF vs Rival" en casa.
     condicion = "Visitante" if match and match.group(1) == "@" else "Local"
 
@@ -181,9 +191,9 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
             if re.fullmatch(r"\d{4}-\d{4} Season", tramo_raw)
             else NIVEL_MAP.get(tramo_raw, "tramo")
         )
-        record    = {"partido": f"CAdF vs {rival}", "rival": rival,
+        record    = {"partido": f"CAdF vs {rival}", "rival": rival, "archivo": filename,
                      "condicion": condicion, "fecha_ref": _match_date(filename, created),
-                     "competicion": "Amistoso" if friendly else "Oficial",
+                     "competicion": competition,
                      "nivel": nivel, "tramo_raw": tramo_raw}
         for col_hudl, col_interno in COL_MAP.items():
             if col_hudl in row.index and col_hudl != "Partidos":
@@ -257,7 +267,7 @@ def load_all(drive_folder_id: str, drive_headers: dict[str, str]) -> pd.DataFram
         else tramo_order.index(x) + 1 if x in tramo_order else 99
     )
     # Orden cronológico: la historia de la temporada depende de él (acumulados, forma).
-    # Las jornadas solo cuentan partidos oficiales; los amistosos llevan jornada 0.
+    # Las jornadas solo cuentan partidos de Liga; Copa y amistosos llevan jornada 0.
     fechas = df.groupby("partido").agg(fecha=("fecha_ref", "min"), comp=("competicion", "first"))
     fechas = fechas.sort_values("fecha", na_position="last")
     oficiales = fechas[fechas["comp"] == "Oficial"].index

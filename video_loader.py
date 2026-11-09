@@ -126,6 +126,7 @@ def _canonical_players(events: pd.DataFrame) -> pd.DataFrame:
 
     events["jugador"] = events["jugador"].map(canonical)
     events["rematador"] = events["rematador"].map(canonical)
+    events["pasador"] = events["pasador"].map(canonical)
     return events
 
 
@@ -180,6 +181,7 @@ def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
             events.append({
                 "partido": partido,
                 "rival": rival,
+                "archivo": filename,
                 "categoria": category,
                 "equipo": equipo,
                 "fase": fase,
@@ -213,6 +215,13 @@ def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
                     "DIRECTA": "Directa", "FRONTAL": "Frontal", "MEDIALUNA": "Frontal",
                     "LATERAL": "Lateral", "LEJANA": "Lejana",
                 }),
+                # Cómo se ejecuta el balón parado: en corto, disparo directo o envío al área.
+                "ejecucion_bp": (
+                    None if fase not in ("corner", "tiro_libre")
+                    else "Corto" if "CORTO" in tags
+                    else "Remate directo" if "REMATE" in tags
+                    else "Al área"
+                ),
                 "rol_transicion": _selected(tags, {
                     "INFLUENCIA": "Influencia", "COOPERACION": "Cooperación", "VIGILANCIA": "Vigilancia",
                 }),
@@ -264,4 +273,9 @@ def load_longomatch_events(folder_id: str, headers: dict[str, str]) -> pd.DataFr
     implied = (events["fase"] == "finalizacion") & (events["tipo_llegada"] == "Remate") & events["remate"].isna()
     events["remate_inferido"] = implied
     events.loc[implied, "remate"] = "Remata"
+    # Criterio del analista: en una llegada de tipo «Remate», Player es quien dispara
+    # (no hay pase previo). Se guarda como rematador y no como pasador.
+    direct = (events["fase"] == "finalizacion") & (events["tipo_llegada"] == "Remate")
+    events.loc[direct & events["rematador"].isna(), "rematador"] = events.loc[direct, "jugador"]
+    events["pasador"] = events["jugador"].where((events["fase"] == "finalizacion") & ~direct)
     return _canonical_players(events)

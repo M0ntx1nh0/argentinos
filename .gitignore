@@ -9,3 +9,5 @@ token_google.json
 titan-argentinos-503811-67466c1aab4b.json
 output/
 tmp/
+/.claude/
+/data/
