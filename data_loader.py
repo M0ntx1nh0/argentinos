@@ -209,48 +209,50 @@ def _parse_csv(filepath: str) -> pd.DataFrame:
         return _parse_csv_text(source.read(), os.path.basename(filepath))
 
 
-def _load_drive_csvs(folder_id: str, headers: dict[str, str]) -> list[pd.DataFrame]:
-    query = f"'{folder_id}' in parents and trashed = false"
+def list_drive_csvs(folder_id: str, headers: dict[str, str]):
+    if not folder_id or not headers:
+        raise ValueError("Faltan la carpeta o las credenciales para leer los partidos desde Drive.")
+    params = {
+        "q": f"'{folder_id}' in parents and trashed = false",
+        "fields": "nextPageToken,files(id,name,createdTime,md5Checksum,version)",
+        "orderBy": "name",
+        "pageSize": 200,
+        "supportsAllDrives": "true",
+        "includeItemsFromAllDrives": "true",
+    }
+    while True:
+        response = requests.get("https://www.googleapis.com/drive/v3/files", headers=headers, params=params, timeout=60)
+        response.raise_for_status()
+        page = response.json()
+        yield from (file for file in page.get("files", []) if file.get("name", "").lower().endswith(".csv"))
+        if not page.get("nextPageToken"):
+            return
+        params["pageToken"] = page["nextPageToken"]
+
+
+def download_drive_file(file_id: str, headers: dict[str, str]) -> bytes:
     response = requests.get(
-        "https://www.googleapis.com/drive/v3/files",
-        headers=headers,
-        params={
-            "q": query,
-            "fields": "files(id,name,mimeType,createdTime)",
-            "orderBy": "name",
-            "pageSize": 200,
-            "supportsAllDrives": "true",
-            "includeItemsFromAllDrives": "true",
-        },
-        timeout=60,
+        f"https://www.googleapis.com/drive/v3/files/{file_id}", headers=headers,
+        params={"alt": "media", "supportsAllDrives": "true"}, timeout=120,
     )
     response.raise_for_status()
+    return response.content
 
-    frames = []
-    for drive_file in response.json().get("files", []):
-        if not drive_file.get("name", "").lower().endswith(".csv"):
-            continue
-        content = requests.get(
-            f"https://www.googleapis.com/drive/v3/files/{drive_file['id']}",
-            headers=headers,
-            params={"alt": "media", "supportsAllDrives": "true"},
-            timeout=60,
-        )
-        content.raise_for_status()
-        text = content.content.decode("utf-8-sig")
-        # Los CSV de LongoMatch se almacenan en la misma carpeta, pero no comparten
-        # la tabla de resumen de HUDL. Se integrarán desde su importador específico.
-        if text.lstrip().startswith("CATEGORY:"):
-            continue
-        frames.append(_parse_csv_text(text, drive_file["name"], drive_file.get("createdTime")))
-    return frames
+
+def iter_drive_csvs(folder_id: str, headers: dict[str, str]):
+    for file in list_drive_csvs(folder_id, headers):
+        content = download_drive_file(file["id"], headers)
+        yield file["name"], content.decode("utf-8-sig"), file.get("createdTime")
 
 
 def load_all(drive_folder_id: str, drive_headers: dict[str, str]) -> pd.DataFrame:
     """Carga exclusivamente los CSVs de Partidos disponibles en Google Drive."""
-    if not drive_folder_id or not drive_headers:
-        raise ValueError("Faltan la carpeta o las credenciales para leer los partidos desde Drive.")
-    frames = _load_drive_csvs(drive_folder_id, drive_headers)
+    return read_hudl_reports(iter_drive_csvs(drive_folder_id, drive_headers))
+
+
+def read_hudl_reports(csvs) -> pd.DataFrame:
+    frames = [_parse_csv_text(text, name, created) for name, text, created in csvs
+              if not text.lstrip().startswith("CATEGORY:")]
 
     if not frames:
         return pd.DataFrame()

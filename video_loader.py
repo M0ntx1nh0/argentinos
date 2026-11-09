@@ -5,7 +5,7 @@ import re
 import unicodedata
 
 import pandas as pd
-import requests
+from data_loader import iter_drive_csvs
 
 
 def _key(value: str) -> str:
@@ -233,37 +233,12 @@ def parse_longomatch_csv(content: str, filename: str) -> pd.DataFrame:
 
 def load_longomatch_events(folder_id: str, headers: dict[str, str]) -> pd.DataFrame:
     """Lee únicamente los CSV de LongoMatch de la carpeta Partidos de Drive."""
-    query = f"'{folder_id}' in parents and trashed = false"
-    response = requests.get(
-        "https://www.googleapis.com/drive/v3/files",
-        headers=headers,
-        params={
-            "q": query,
-            "fields": "files(id,name,mimeType)",
-            "orderBy": "name",
-            "pageSize": 200,
-            "supportsAllDrives": "true",
-            "includeItemsFromAllDrives": "true",
-        },
-        timeout=60,
-    )
-    response.raise_for_status()
+    return read_longomatch_reports(iter_drive_csvs(folder_id, headers))
 
-    frames = []
-    for drive_file in response.json().get("files", []):
-        if not drive_file.get("name", "").lower().endswith(".csv"):
-            continue
-        content = requests.get(
-            f"https://www.googleapis.com/drive/v3/files/{drive_file['id']}",
-            headers=headers,
-            params={"alt": "media", "supportsAllDrives": "true"},
-            timeout=60,
-        )
-        content.raise_for_status()
-        text = content.content.decode("utf-8-sig")
-        if text.lstrip().startswith("CATEGORY:"):
-            frames.append(parse_longomatch_csv(text, drive_file["name"]))
 
+def read_longomatch_reports(csvs) -> pd.DataFrame:
+    frames = [parse_longomatch_csv(text, name) for name, text, _ in csvs
+              if text.lstrip().startswith("CATEGORY:")]
     if not frames:
         return pd.DataFrame()
     events = pd.concat(frames, ignore_index=True).sort_values(

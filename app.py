@@ -30,8 +30,8 @@ from PIL import Image, ImageChops, ImageDraw
 from plotly.colors import qualitative, sample_colorscale
 from plotly.subplots import make_subplots
 import rffm
-from data_loader import _match_date, load_all
-from video_loader import load_longomatch_events
+from data_loader import _match_date, download_drive_file, list_drive_csvs, read_hudl_reports
+from video_loader import read_longomatch_reports
 
 # ── Colores del club ──────────────────────────────────────────────────────────
 AZUL_OSCURO  = "#1B2A4A"
@@ -168,9 +168,14 @@ def _match_axis(fig, labels, width: int = 22, **axes):
                      ticktext=[_wrapped_label(label, width) for label in labels], automargin=True, **axes)
 
 
-def img_to_b64(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+@st.cache_data(show_spinner=False)
+def _sidebar_logo(content: bytes) -> str:
+    with Image.open(io.BytesIO(content)) as image:
+        logo = image.convert("RGBA")
+    logo.thumbnail((204, 204), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    logo.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 # ── Sistema de diseño: componentes HTML (estilos en inject_css) ───────────────
@@ -608,8 +613,13 @@ NAV_ITEMS = [
 
 def render_sidebar(temporada: str = ""):
     logo_drive = _drive_rffm_bytes(RFFM_CREST_FOLDER, "logo_argentino.png")
-    logo_arg = base64.b64encode(logo_drive).decode("ascii") if logo_drive else img_to_b64(os.path.join(ASSETS, "logo_argentino.png"))
-    logo_sdc = img_to_b64(os.path.join(ASSETS, "sport data campus.png"))
+    try:
+        logo_arg = _sidebar_logo(logo_drive) if logo_drive else ""
+    except OSError:
+        logo_arg = ""
+    if not logo_arg:
+        logo_arg = _sidebar_logo((Path(ASSETS) / "logo_argentino.png").read_bytes())
+    logo_sdc = _sidebar_logo((Path(ASSETS) / "sport data campus.png").read_bytes())
 
     st.sidebar.markdown(f"""
     <div style="display:flex;align-items:center;justify-content:center;
@@ -630,16 +640,12 @@ def render_sidebar(temporada: str = ""):
     # Cajitas de navegación
     for icon, label in NAV_ITEMS:
         active = st.session_state.page == label
-        if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}",
-                             type="primary" if active else "secondary",
-                             use_container_width=True):
-            st.session_state.page = label
-            st.rerun()
+        st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}",
+                          type="primary" if active else "secondary", use_container_width=True,
+                          on_click=st.session_state.update, args=({"page": label},))
 
-    if st.sidebar.button("🔄  Actualizar datos de Drive", key="refresh_drive_data", use_container_width=True):
-        # Permite ver un archivo recién subido sin esperar al vencimiento de la caché.
-        st.cache_data.clear()
-        st.rerun()
+    st.sidebar.button("🔄  Actualizar datos de Drive", key="refresh_drive_data", use_container_width=True,
+                      on_click=_refresh_drive_data)
 
     st.sidebar.markdown(f"<hr style='border-color:{AZUL_CLARO};margin:20px 0 12px'>",
                         unsafe_allow_html=True)
@@ -1066,7 +1072,7 @@ def _render_season_performance(df: pd.DataFrame, video_df: pd.DataFrame):
             "Volumen de tiro, precisión por zonas y eficacia de cara a puerta.")
     st.markdown("<div class='cadf-sublabel'>Pases por tercio del campo · precisión y volumen</div>", unsafe_allow_html=True)
     modo = st.radio("Modo", ["Promedio por partido", "Total temporada"],
-                    horizontal=True, label_visibility="collapsed")
+                    horizontal=True, label_visibility="collapsed", key="season_pass_mode")
 
     tercios_data = [
         ("Zona defensiva\n(1er tercio)",   "def_intentados",  "def_completados",  "pct_pases_def"),
@@ -3367,18 +3373,25 @@ def _drive_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {creds.token}"}
 
 
-# Streamlit reutiliza la caché si el cargador conserva su nombre y su código.
-# Estas funciones identifican la versión de los informes que incluye `archivo`.
+@st.cache_data(ttl=300, show_spinner=False)
+def _match_csv_files(folder_id: str) -> list[tuple[str, str, str | None]]:
+    """Comparte una sola lectura de la carpeta entre los dos importadores."""
+    reports = []
+    for file in list_drive_csvs(folder_id, _drive_headers()):
+        revision = file.get("md5Checksum") or file.get("version")
+        content = _read_drive_revision(file["id"], revision)
+        reports.append((file["name"], content.decode("utf-8-sig"), file.get("createdTime")))
+    return reports
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_hudl_reports(folder_id: str) -> pd.DataFrame:
-    """Cachea los informes HUDL con el nombre del CSV de origen."""
-    return load_all(drive_folder_id=folder_id, drive_headers=_drive_headers())
+    return read_hudl_reports(_match_csv_files(folder_id))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_longomatch_reports(folder_id: str) -> pd.DataFrame:
-    """Cachea los eventos de LongoMatch con el nombre del CSV de origen."""
-    return load_longomatch_events(folder_id, _drive_headers())
+    return read_longomatch_reports(_match_csv_files(folder_id))
 
 
 def _calendar_sources(calendar: pd.DataFrame, reports: pd.DataFrame) -> tuple[dict[int, list[str]], list[str]]:
@@ -3760,7 +3773,7 @@ def _render_standings_evolution(standings: pd.DataFrame):
     ordered = standings.sort_values("Posición").set_index("ID equipo RFFM")["Equipo"]
     default_ids = list(dict.fromkeys([*ordered.index[:3], rffm.TEAM_ID]))
     extras = st.multiselect("Añadir equipos a la comparación", [team for team in ordered.index if team not in default_ids],
-                            format_func=ordered.get)
+                            format_func=ordered.get, key="season_compare_teams")
     chart(_standings_bump(history, standings, [*default_ids, *extras]))
     missing = sorted(set(range(1, int(standings["Jornada"].max()) + 1)) - set(history["Jornada"]))
     if missing:
@@ -3770,68 +3783,76 @@ def _render_standings_evolution(standings: pd.DataFrame):
 def page_temporada():
     page_header("Temporada", "Primera Aficionado · Grupo 2",
                 kicker=f"Club Argentino · Temporada {rffm.SEASON}")
-    general_tab, performance_tab = st.tabs(["Información general", "Información de rendimiento"])
+    general_tab, performance_tab = st.tabs(
+        ["Información general", "Información de rendimiento"], key="season_view", on_change="rerun",
+    )
+    # Conserva los filtros del panel oculto al alternar las dos vistas.
+    hidden_filter = "season_pass_mode" if general_tab.open else "season_compare_teams"
+    if hidden_filter in st.session_state:
+        st.session_state[hidden_filter] = st.session_state[hidden_filter]
 
-    with general_tab:
-        if RFFM_DRIVE_WRITE_ENABLED:
-            if st.button("Actualizar RFFM y guardar en Drive", type="primary"):
-                status, title = "error", "Falló la sincronización con Drive"
-                try:
-                    with st.spinner("Descargando datos oficiales y sincronizando los CSV con Drive..."):
-                        changed = _publish_rffm()
-                except (requests.RequestException, GoogleAuthError, KeyError, TypeError):
-                    detail = "Comprueba la conexión con la RFFM y Google Drive y vuelve a intentarlo."
-                except (OSError, ValueError) as error:
-                    detail = str(error)
-                else:
-                    if changed:
-                        status, title = "success", "Sincronización completada"
-                        detail = "Archivos guardados y verificados en Drive · " + ", ".join(changed)
-                    else:
-                        status, title = "info", "Drive ya está al día"
-                        detail = "Los tres CSV coinciden con los datos de la RFFM."
-                finished = datetime.now(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y · %H:%M")
-                st.session_state["rffm_sync_status"] = (status, title, detail, finished)
-                st.toast(title, icon={"error": "⚠️", "success": "✅", "info": "ℹ️"}[status])
-
-            last_sync = st.session_state.get("rffm_sync_status")
-            if last_sync:
-                status, title, detail, finished = last_sync
-                alert = {"error": st.error, "success": st.success, "info": st.info}[status]
-                alert(f"**{title}** · {finished}\n\n{detail}")
-        with st.expander("Descarga manual de datos RFFM"):
-            st.caption("Genera el calendario, la clasificación y su historial para descargarlos como CSV.")
+    standings = None
+    if general_tab.open:
+        with general_tab:
             if RFFM_DRIVE_WRITE_ENABLED:
-                st.caption("Para guardar los datos directamente en Drive, usa «Actualizar RFFM y guardar en Drive».")
+                if st.button("Actualizar RFFM y guardar en Drive", type="primary"):
+                    status, title = "error", "Falló la sincronización con Drive"
+                    try:
+                        with st.spinner("Descargando datos oficiales y sincronizando los CSV con Drive..."):
+                            changed = _publish_rffm()
+                    except (requests.RequestException, GoogleAuthError, KeyError, TypeError):
+                        detail = "Comprueba la conexión con la RFFM y Google Drive y vuelve a intentarlo."
+                    except (OSError, ValueError) as error:
+                        detail = str(error)
+                    else:
+                        if changed:
+                            status, title = "success", "Sincronización completada"
+                            detail = "Archivos guardados y verificados en Drive · " + ", ".join(changed)
+                        else:
+                            status, title = "info", "Drive ya está al día"
+                            detail = "Los tres CSV coinciden con los datos de la RFFM."
+                    finished = datetime.now(ZoneInfo("Europe/Madrid")).strftime("%d/%m/%Y · %H:%M")
+                    st.session_state["rffm_sync_status"] = (status, title, detail, finished)
+                    st.toast(title, icon={"error": "⚠️", "success": "✅", "info": "ℹ️"}[status])
+
+                last_sync = st.session_state.get("rffm_sync_status")
+                if last_sync:
+                    status, title, detail, finished = last_sync
+                    alert = {"error": st.error, "success": st.success, "info": st.info}[status]
+                    alert(f"**{title}** · {finished}\n\n{detail}")
+            with st.expander("Descarga manual de datos RFFM"):
+                st.caption("Genera el calendario, la clasificación y su historial para descargarlos como CSV.")
+                if RFFM_DRIVE_WRITE_ENABLED:
+                    st.caption("Para guardar los datos directamente en Drive, usa «Actualizar RFFM y guardar en Drive».")
+                else:
+                    st.caption("Para actualizar los datos publicados, sustituye los tres CSV en «Calendario y clasificación» "
+                               "de Drive y pulsa «Actualizar datos de Drive» en el menú lateral.")
+                if st.button("Generar CSV de la RFFM", type="primary"):
+                    try:
+                        with st.spinner("Preparando los CSV de la RFFM..."):
+                            history_file = _drive_rffm_bytes(RFFM_DATA_FOLDER, rffm.HISTORY_FILE.name)
+                            with _rffm_refresh_lock():
+                                matches, teams, _ = rffm.refresh_local(io.BytesIO(history_file) if history_file else rffm.HISTORY_FILE)
+                        st.success(f"CSV listos para descargar · {matches} jornadas · {teams} equipos")
+                        st.session_state["rffm_draft_ready"] = True
+                    except (requests.RequestException, OSError, ValueError, KeyError, TypeError):
+                        st.warning("No se pudo completar la descarga de la RFFM.")
+                if st.session_state.get("rffm_draft_ready"):
+                    for path in (rffm.CALENDAR_FILE, rffm.STANDINGS_FILE, rffm.HISTORY_FILE):
+                        if path.is_file():
+                            st.download_button(f"Descargar {path.name}", path.read_bytes(), file_name=path.name, mime="text/csv")
+
+            try:
+                (jornada, standings), standings_in_drive = _read_rffm_table(rffm.load_standings, rffm.STANDINGS_FILE)
+            except (OSError, ValueError):
+                st.info("Falta el archivo clasificacion.csv en «Calendario y clasificación».")
             else:
-                st.caption("Para actualizar los datos publicados, sustituye los tres CSV en «Calendario y clasificación» "
-                           "de Drive y pulsa «Actualizar datos de Drive» en el menú lateral.")
-            if st.button("Generar CSV de la RFFM", type="primary"):
-                try:
-                    with st.spinner("Preparando los CSV de la RFFM..."):
-                        history_file = _drive_rffm_bytes(RFFM_DATA_FOLDER, rffm.HISTORY_FILE.name)
-                        with _rffm_refresh_lock():
-                            matches, teams, _ = rffm.refresh_local(io.BytesIO(history_file) if history_file else rffm.HISTORY_FILE)
-                    st.success(f"CSV listos para descargar · {matches} jornadas · {teams} equipos")
-                    st.session_state["rffm_draft_ready"] = True
-                except (requests.RequestException, OSError, ValueError, KeyError, TypeError):
-                    st.warning("No se pudo completar la descarga de la RFFM.")
-            if st.session_state.get("rffm_draft_ready"):
-                for path in (rffm.CALENDAR_FILE, rffm.STANDINGS_FILE, rffm.HISTORY_FILE):
-                    if path.is_file():
-                        st.download_button(f"Descargar {path.name}", path.read_bytes(), file_name=path.name, mime="text/csv")
+                if not standings_in_drive:
+                    st.caption("Clasificación desde la copia local.")
+                _render_season_standings(jornada, standings)
+            st.markdown(f"[Clasificación oficial RFFM]({rffm.STANDINGS_URL})")
 
-        standings = None
-        try:
-            (jornada, standings), standings_in_drive = _read_rffm_table(rffm.load_standings, rffm.STANDINGS_FILE)
-        except (OSError, ValueError):
-            st.info("Falta el archivo clasificacion.csv en «Calendario y clasificación».")
-        else:
-            if not standings_in_drive:
-                st.caption("Clasificación desde la copia local.")
-            _render_season_standings(jornada, standings)
-        st.markdown(f"[Clasificación oficial RFFM]({rffm.STANDINGS_URL})")
-
+    with general_tab if general_tab.open else performance_tab:
         with st.spinner("Comprobando informes de Drive..."):
             hudl, video = _season_drive_reports()
         cup_reports = pd.DataFrame()
@@ -3849,9 +3870,10 @@ def page_temporada():
         try:
             calendar, calendar_in_drive = _read_rffm_table(rffm.load_calendar, rffm.CALENDAR_FILE)
         except (OSError, ValueError):
-            st.info("Falta el archivo calendario.csv en «Calendario y clasificación».")
+            if general_tab.open:
+                st.info("Falta el archivo calendario.csv en «Calendario y clasificación».")
         else:
-            if not calendar_in_drive:
+            if general_tab.open and not calendar_in_drive:
                 st.caption("Calendario desde la copia local.")
             results = _federation_results(calendar)
             hudl_matches = hudl[hudl["nivel"].eq("temporada")] if hudl is not None and not hudl.empty else hudl
@@ -3860,17 +3882,19 @@ def page_temporada():
                 if reports is not None:
                     source_matches[source], files = _calendar_sources(calendar, reports)
                     unmatched.extend(f"{source} · {file}" for file in files)
-            _render_season_calendar(calendar, results, hudl_matches, video, source_matches)
-            if hudl is not None:
+            if general_tab.open:
+                _render_season_calendar(calendar, results, hudl_matches, video, source_matches)
+            if performance_tab.open and hudl is not None:
                 hudl = _with_match_display(hudl, calendar, source_matches["HUDL"])
-            if video is not None:
+            if performance_tab.open and video is not None:
                 video = _with_match_display(video, calendar, source_matches["LongoMatch"])
-            if unmatched:
+            if general_tab.open and unmatched:
                 with st.expander("Informes sin jornada oficial asociada"):
                     for file in unmatched:
                         st.text(file)
-        st.markdown(f"[Calendario oficial RFFM]({rffm.CALENDAR_URL})")
-        if not cup_reports.empty:
+        if general_tab.open:
+            st.markdown(f"[Calendario oficial RFFM]({rffm.CALENDAR_URL})")
+        if general_tab.open and not cup_reports.empty:
             with st.expander("Informes de Copa RFFM"):
                 st.caption("Estos informes se pueden abrir en «Partido».")
                 for report in cup_reports.drop_duplicates("archivo").itertuples():
@@ -3881,16 +3905,17 @@ def page_temporada():
         if standings is not None:
             _render_standings_evolution(standings)
 
-    with performance_tab:
-        section("Resumen y rendimiento")
-        if hudl is None or hudl.empty:
-            st.info("Los indicadores de juego estarán aquí cuando haya informes de HUDL en Drive.")
-        else:
-            if "jornada_rffm" in hudl and hudl["jornada_rffm"].notna().all():
-                hudl = hudl.assign(orden=hudl["jornada_rffm"].astype(int))
-            video_aligned, _, _ = align_video_rivals(hudl, video if video is not None else pd.DataFrame())
-            _render_season_summary(hudl, video_aligned, results)
-            _render_season_performance(hudl, video_aligned)
+    if performance_tab.open:
+        with performance_tab:
+            section("Resumen y rendimiento")
+            if hudl is None or hudl.empty:
+                st.info("Los indicadores de juego estarán aquí cuando haya informes de HUDL en Drive.")
+            else:
+                if "jornada_rffm" in hudl and hudl["jornada_rffm"].notna().all():
+                    hudl = hudl.assign(orden=hudl["jornada_rffm"].astype(int))
+                video_aligned, _, _ = align_video_rivals(hudl, video if video is not None else pd.DataFrame())
+                _render_season_summary(hudl, video_aligned, results)
+                _render_season_performance(hudl, video_aligned)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -3948,14 +3973,16 @@ def _list_drive_gps_files(folder_id: str) -> list[dict]:
 
 
 def _download_drive_file(file_id: str) -> bytes:
-    resp = requests.get(
-        f"https://www.googleapis.com/drive/v3/files/{file_id}",
-        headers=_drive_headers(),
-        params={"alt": "media", "supportsAllDrives": "true"},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.content
+    return download_drive_file(file_id, _drive_headers())
+
+
+@st.cache_data(max_entries=256, show_spinner=False)
+def _download_drive_revision(file_id: str, revision: str) -> bytes:
+    return _download_drive_file(file_id)
+
+
+def _read_drive_revision(file_id: str, revision: str | None) -> bytes:
+    return _download_drive_revision(file_id, revision) if revision else _download_drive_file(file_id)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -3992,7 +4019,7 @@ def _rffm_drive_index(season_folder_id: str, folder_name: str) -> dict[str, tupl
 @st.cache_data(ttl=300, show_spinner=False)
 def _rffm_file_content(file_id: str, version: str) -> bytes:
     try:
-        return _download_drive_file(file_id)
+        return _read_drive_revision(file_id, version)
     except DRIVE_READ_ERRORS:
         return b""
 
@@ -4010,6 +4037,13 @@ def _read_rffm_table(read, path: Path):
         except (ValueError, IndexError, KeyError):
             pass
     return read(path), False
+
+
+def _refresh_drive_data():
+    # Revisa los listados de Drive y conserva las descargas de versiones inmutables.
+    for cache in (_get_season_subfolder_id, _rffm_drive_index, _rffm_file_content,
+                  _match_csv_files, _load_hudl_reports, _load_longomatch_reports, load_gps):
+        cache.clear()
 
 
 @st.cache_resource(show_spinner=False)
@@ -4143,7 +4177,7 @@ def _load_gps_from_drive() -> pd.DataFrame:
     frames = []
     gps_folder_id = _get_season_subfolder_id(GOOGLE_SEASON_FOLDER_ID, "GPS")
     for drive_file in _list_drive_gps_files(gps_folder_id):
-        content = _download_drive_file(drive_file["id"])
+        content = _read_drive_revision(drive_file["id"], drive_file.get("modifiedTime"))
         frame = _workbook_to_dataframe(io.BytesIO(content))
         if not frame.empty:
             frame["source_file"] = drive_file["name"]
@@ -4833,7 +4867,11 @@ def page_fisica():
     page_header("Preparación Física", "Carga de entrenamiento por sesión y jugador",
                 kicker="Datos GPS · Titan")
 
-    df = load_gps()
+    try:
+        df = load_gps()
+    except DRIVE_READ_ERRORS:
+        st.error("No se pudieron cargar los datos GPS de Drive. Prueba con «Actualizar datos de Drive».")
+        return
     if df.empty:
         st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
         return
@@ -5568,10 +5606,13 @@ def main():
         render_topbar(render_sidebar(rffm.SEASON), rffm.SEASON)
         page_temporada()
         return
-
     if not GOOGLE_SEASON_FOLDER_ID:
         render_sidebar(rffm.SEASON)
         st.error("Falta configurar GOOGLE_SEASON_FOLDER_ID en Streamlit Secrets.")
+        return
+    if st.session_state.page == "Física":
+        render_topbar(render_sidebar(rffm.SEASON), rffm.SEASON)
+        page_fisica()
         return
 
     try:
@@ -5606,13 +5647,14 @@ def main():
     temporada = season_label(df)
     page = render_sidebar(temporada)
     render_topbar(page, temporada)
-    # Rivales y Jugadores usan la competición oficial; Partido permite ver también amistosos.
-    df_oficial, video_oficial = split_league_reports(df, video_df)
-
-    if   page == "Partido":   page_partido(df, video_df)
-    elif page == "Rivales":   page_rivales(df_oficial, video_oficial)
-    elif page == "Jugadores": page_jugadores(video_oficial)
-    elif page == "Física":    page_fisica()
+    if page == "Partido":
+        page_partido(df, video_df)
+    elif page in ("Rivales", "Jugadores"):
+        df_oficial, video_oficial = split_league_reports(df, video_df)
+        if page == "Rivales":
+            page_rivales(df_oficial, video_oficial)
+        else:
+            page_jugadores(video_oficial)
 
 
 if __name__ == "__main__":
