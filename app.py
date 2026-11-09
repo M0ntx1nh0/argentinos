@@ -154,9 +154,9 @@ def depth_bar(color: str, name: str, x, y, text=None, pos="outside",
     )
 
 
-def chart(fig):
+def chart(fig, **options):
     """Renderiza un plotly chart."""
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, **options)
 
 
 def _wrapped_label(label: str, width: int) -> str:
@@ -1990,7 +1990,6 @@ def player_table(events: pd.DataFrame) -> pd.DataFrame:
                         own.dropna(subset=["rematador"])[["rematador", match_key]].rename(columns={"rematador": "jugador"})])
     table["Partidos"] = played.groupby("jugador")[match_key].nunique()
     table["Balance robo-pérdida"] = table["Recuperaciones"] - table["Pérdidas"]
-    table["Acciones de gol"] = table["Goles"] + table["Asistencias"] + table["Pases a finalización"] + table["Remates"]
     order = (table.index.to_series().str.extract(r"^(\d+)")[0].astype(float))
     return table.loc[order.sort_values().index]
 
@@ -2011,12 +2010,6 @@ def player_insights(table: pd.DataFrame) -> list[tuple[str, str, str]]:
     if table.empty:
         return []
     items = []
-    top = table.sort_values("Acciones de gol", ascending=False).iloc[0]
-    items.append(("pos", f"Más protagonista en ataque: {_short(top.name)}",
-                  f"<b>{top['Acciones de gol']}</b> acciones de gol: {_count_label(top['Goles'], 'Goles')}, "
-                  f"{_count_label(top['Asistencias'], 'Asistencias')}, "
-                  f"{_count_label(top['Pases a finalización'], 'Pases a finalización')} y "
-                  f"{top['Remates']} remate{'s' if top['Remates'] != 1 else ''}."))
     rec = table.sort_values("Recuperaciones", ascending=False).iloc[0]
     items.append(("pos", f"Mejor recuperador: {_short(rec.name)}",
                   f"<b>{rec['Recuperaciones']}</b> recuperaciones (balance {rec['Balance robo-pérdida']:+d} con sus pérdidas)."))
@@ -2027,8 +2020,46 @@ def player_insights(table: pd.DataFrame) -> list[tuple[str, str, str]]:
                       f"si son pérdidas por riesgo asumido (zona de finalización) o evitables."))
     shooters = table[table["Remates"] > 0]
     if shooters.empty and table["Pases a finalización"].sum() >= 10:
-        items.append(("neg", "Nadie remata tras pase", "Hay llegadas pero no remates etiquetados."))
+        items.append(("neg", "Sin remates etiquetados", "Hay llegadas pero no remates etiquetados."))
     return items
+
+
+def _render_player_ranking(counts: pd.Series, title: str, color: str, selected: str | None):
+    st.markdown(f"**{title}**")
+    if counts.name == "Remates":
+        st.caption("LongoMatch identifica al rematador. Los tiros a puerta de HUDL corresponden al equipo.")
+    ranked = counts[counts.gt(0)].sort_values(ascending=False, kind="stable")
+    positions = ranked.rank(method="min", ascending=False).astype(int)
+    if selected in ranked.index:
+        st.caption(f"{_short(selected)} · Puesto {positions[selected]} · {ranked[selected]}")
+    elif selected:
+        st.caption(f"{_short(selected)} · Sin registros en esta clasificación.")
+    if ranked.empty:
+        if not selected:
+            st.caption("Sin registros en los partidos seleccionados.")
+        return
+
+    key = f"jug_ranking_{counts.name}"
+
+    def select_player():
+        points = st.session_state[key]["selection"]["points"]
+        if points:
+            st.session_state["jug_focus"] = points[-1]["customdata"][0]
+
+    highlight = selected in ranked.index
+    labels = [f"{positions[name]}. {escape(_short(name))}" for name in ranked.index]
+    fig = go.Figure(go.Bar(
+        x=ranked.to_list(), y=labels, orientation="h", text=ranked.to_list(),
+        customdata=[[name] for name in ranked.index], textposition="outside",
+        marker=dict(color=[color if not highlight or name == selected else "#6080a4" for name in ranked.index],
+                    line=dict(color=BLANCO, width=[2 if name == selected else 0 for name in ranked.index])),
+        hovertemplate="%{y}<br>%{x}<extra></extra>",
+    ))
+    t(fig, height=max(195, 27 * len(ranked) + 55), margin=dict(t=12, b=32, l=12, r=28),
+      clickmode="event+select", dragmode=False)
+    fig.update_yaxes(autorange="reversed", automargin=True, showgrid=False, fixedrange=True)
+    fig.update_xaxes(range=[0, ranked.max() * 1.2], dtick=max(1, int(ranked.max()) // 6), fixedrange=True)
+    chart(fig, key=key, on_select=select_player, selection_mode="points")
 
 
 def page_jugadores(video_df: pd.DataFrame):
@@ -2045,6 +2076,9 @@ def page_jugadores(video_df: pd.DataFrame):
                          format_func=lambda file: labels.get(file, file))
     events = video_df[video_df["archivo"].isin(labels)] if scope == all_matches else video_df[video_df["archivo"] == scope]
     table = player_table(events)
+    if table.empty:
+        st.info("No hay acciones del Club Argentino atribuidas a jugadores en los partidos seleccionados.")
+        return
     st.caption(f"Partidos con jugador etiquetado: {', '.join(labels.values())}. "
                "«Pases a finalización» = quien da el centro o pase filtrado que llega al último tercio; "
                "«Remates» = quien remata, tras pase (etiqueta con nombre) o en disparo directo (Player).")
@@ -2068,21 +2102,20 @@ def page_jugadores(video_df: pd.DataFrame):
 
     insight_panel(player_insights(table))
 
-    section("Contribución ofensiva", "Goles, asistencias, pases a finalización y remates de cada jugador.")
-    att = table[table["Acciones de gol"] > 0].sort_values("Acciones de gol")
-    fig = go.Figure()
-    for column, color in [("Goles", VERDE), ("Asistencias", DORADO),
-                          ("Pases a finalización", AZUL_CELESTE), ("Remates", "#8FA3BF")]:
-        fig.add_trace(go.Bar(name=column, y=[_short(n) for n in att.index], x=att[column], orientation="h",
-                             marker=dict(color=color, line=dict(width=0)),
-                             text=[str(v) if v else "" for v in att[column]], textposition="inside",
-                             textfont=dict(color=AZUL_OSCURO if color != "#8FA3BF" else BLANCO, size=11)))
-    for name, total in zip(att.index, att["Acciones de gol"]):
-        fig.add_annotation(x=total, y=_short(name), text=f"<b>{total}</b>", showarrow=False, xanchor="left",
-                           xshift=6, font=dict(color=BLANCO, size=11))
-    t(fig, height=max(320, 30 * len(att) + 110), barmode="stack", margin=dict(t=30, b=70, l=170, r=40))
-    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.06, x=0))
-    chart(fig)
+    section("Clasificaciones ofensivas",
+            "Pulsa una barra o elige un jugador para ver su puesto en las demás clasificaciones.")
+    rankings = [("Goles", "Goleadores", VERDE), ("Asistencias", "Asistentes", DORADO),
+                ("Pases a finalización", "Pases a finalización", AZUL_CELESTE),
+                ("Remates", "Remates etiquetados", "#c4b0ed")]
+    players = table.index[table[[column for column, _, _ in rankings]].gt(0).any(axis=1)].tolist()
+    if st.session_state.get("jug_focus") not in players:
+        st.session_state.pop("jug_focus", None)
+    selected = st.selectbox("Jugador a destacar", players, index=None, key="jug_focus",
+                            placeholder="Todos los jugadores", format_func=_short)
+    for left, right in (rankings[:2], rankings[2:]):
+        for slot, (column, title, color) in zip(st.columns(2), (left, right)):
+            with slot:
+                _render_player_ranking(table[column], title, color, selected)
 
     section("Con y sin balón: recuperaciones frente a pérdidas",
             "A la derecha, balones recuperados; a la izquierda, balones perdidos. Ordenado por balance.")
@@ -2098,7 +2131,7 @@ def page_jugadores(video_df: pd.DataFrame):
     for name, value in zip(bal.index, bal["Balance robo-pérdida"]):
         fig.add_annotation(x=max(bal["Recuperaciones"].max(), 1) * 1.28, y=_short(name), text=f"<b>{value:+d}</b>" if value else "<b>0</b>",
                            showarrow=False, font=dict(color=VERDE if value > 0 else (ROJO if value < 0 else GRIS_MEDIO), size=11))
-    span = max(int(bal["Recuperaciones"].max()), int(bal["Pérdidas"].max()), 1) * 1.4
+    span = max(bal[["Recuperaciones", "Pérdidas"]].max().fillna(0).max(), 1) * 1.4
     t(fig, height=max(320, 30 * len(bal) + 110), barmode="relative", margin=dict(t=30, b=70, l=170, r=40))
     fig.update_xaxes(range=[-span, span], zeroline=True, zerolinecolor="rgba(255,255,255,0.4)",
                      tickvals=[-20, -10, 0, 10, 20, 30, 40, 50], ticktext=["20", "10", "0", "10", "20", "30", "40", "50"])
