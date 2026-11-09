@@ -2062,6 +2062,39 @@ def _render_player_ranking(counts: pd.Series, title: str, color: str, selected: 
     chart(fig, key=key, on_select=select_player, selection_mode="points")
 
 
+def _render_player_table(table: pd.DataFrame):
+    columns = ["Partidos", "Goles", "Asistencias", "Pases a finalización", "Remates",
+               "Recuperaciones", "Pérdidas", "Balance robo-pérdida", "Balón parado lanzado"]
+    display = table[columns].rename_axis("Jugador").reset_index()
+    scales = {column: max(int(display[column].max()), 1)
+              for column in ("Pases a finalización", "Recuperaciones", "Pérdidas")}
+    headers = "".join(f'<th scope="col">{escape(column)}</th>' for column in display.columns)
+    rows = []
+    for name, *values in display.itertuples(index=False, name=None):
+        cells = []
+        for column, value in zip(columns, values):
+            if column in scales:
+                width = value / scales[column] * 100
+                cells.append(f'<td><div class="cadf-player-measure">'
+                             f'<span class="cadf-player-track" aria-hidden="true"><span style="width:{width:.2f}%"></span></span>'
+                             f'<span>{value}</span></div></td>')
+            else:
+                tone = ""
+                if column == "Balance robo-pérdida":
+                    tone = " positive" if value > 0 else " negative" if value < 0 else ""
+                cells.append(f'<td class="cadf-player-value{tone}">{value}</td>')
+        rows.append(f'<tr><th scope="row">{escape(name)}</th>{"".join(cells)}</tr>')
+
+    st.markdown(
+        '<div class="cadf-player-table-wrap" role="region" aria-label="Tabla completa de jugadores" tabindex="0">'
+        '<table class="cadf-player-table" aria-label="Registros por jugador">'
+        f'<thead><tr>{headers}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+    st.download_button("Descargar tabla de jugadores (CSV)", display.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="jugadores.csv", mime="text/csv")
+
+
 def page_jugadores(video_df: pd.DataFrame):
     page_header("Jugadores", "Aportación individual según el etiquetado de vídeo (LongoMatch)",
                 kicker="Análisis individual")
@@ -2139,16 +2172,7 @@ def page_jugadores(video_df: pd.DataFrame):
     chart(fig)
 
     section("Tabla completa", "Todos los registros por jugador. Las barras comparan dentro de cada columna.")
-    display = table.reset_index().rename(columns={"index": "Jugador", "jugador": "Jugador"})
-    display = display[["Jugador", "Partidos", "Goles", "Asistencias", "Pases a finalización", "Remates",
-                       "Recuperaciones", "Pérdidas", "Balance robo-pérdida", "Balón parado lanzado"]]
-    st.dataframe(
-        display, use_container_width=True, hide_index=True,
-        column_config={
-            col: st.column_config.ProgressColumn(col, format="%d", min_value=0, max_value=max(int(display[col].max()), 1))
-            for col in ["Pases a finalización", "Recuperaciones", "Pérdidas"]
-        },
-    )
+    _render_player_table(table)
 
 
 # ── Página: Táctica (LongoMatch) ─────────────────────────────────────────────
@@ -5357,6 +5381,34 @@ def inject_css():
     .cadf-score-mean {{ color: {DORADO}; background: rgba(0,0,0,0.12); }}
     .cadf-score-missing {{ color: {GRIS_MEDIO}; background: repeating-linear-gradient(135deg,
                             rgba(200,214,229,0.13) 0 2px, transparent 2px 6px); }}
+
+    /* ── Tabla de jugadores ── */
+    .cadf-player-table-wrap {{ max-height: 560px; overflow: auto; border-radius: 12px; }}
+    .cadf-player-table-wrap:focus-visible {{ outline: 2px solid {AZUL_CELESTE}; outline-offset: 2px; }}
+    table.cadf-player-table {{
+        width: 100%; min-width: 1000px; margin: 0; border: 0; border-collapse: separate; border-spacing: 6px;
+        font-variant-numeric: tabular-nums;
+    }}
+    .cadf-player-table th, .cadf-player-table td {{
+        padding: 9px 10px; border: 1px solid rgba(106,175,230,0.14); border-radius: 8px;
+        background: linear-gradient(145deg, #2e4b7a, #233b62); color: {BLANCO};
+        font-size: 0.83rem; line-height: 1.25; text-align: center; font-weight: 700;
+    }}
+    .cadf-player-table thead th {{
+        position: sticky; top: 0; z-index: 2; background: #22406c; color: {GRIS_MEDIO};
+        font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+    }}
+    .cadf-player-table th:first-child {{ position: sticky; left: 0; text-align: left; min-width: 150px; }}
+    .cadf-player-table tbody th {{ z-index: 1; }}
+    .cadf-player-table thead th:first-child {{ z-index: 3; }}
+    .cadf-player-table td.positive {{ color: #a1e6c4; }}
+    .cadf-player-table td.negative {{ color: #ffafbd; }}
+    .cadf-player-measure {{ display: flex; align-items: center; gap: 8px; min-width: 94px; }}
+    .cadf-player-measure > span:last-child {{ min-width: 2ch; text-align: right; }}
+    .cadf-player-track {{
+        flex: 1; height: 6px; border-radius: 99px; overflow: hidden; background: rgba(106,175,230,0.2);
+    }}
+    .cadf-player-track > span {{ display: block; height: 100%; background: {AZUL_CELESTE}; border-radius: 99px; }}
 
     /* ── Pestañas ── */
     .stTabs [data-baseweb="tab-list"] {{ gap: 6px; border-bottom: 1px solid rgba(106,175,230,0.18); }}
