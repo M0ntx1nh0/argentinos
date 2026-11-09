@@ -3273,15 +3273,17 @@ def _drive_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {creds.token}"}
 
 
+# Streamlit reutiliza la caché si el cargador conserva su nombre y su código.
+# Estas funciones identifican la versión de los informes que incluye `archivo`.
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_match_data(folder_id: str) -> pd.DataFrame:
-    """Cachea la tabla HUDL de Drive cinco minutos entre navegaciones."""
+def _load_hudl_reports(folder_id: str) -> pd.DataFrame:
+    """Cachea los informes HUDL con el nombre del CSV de origen."""
     return load_all(drive_folder_id=folder_id, drive_headers=_drive_headers())
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_video_events(folder_id: str) -> pd.DataFrame:
-    """Cachea los CSV de LongoMatch sin usar el token como clave de caché."""
+def _load_longomatch_reports(folder_id: str) -> pd.DataFrame:
+    """Cachea los eventos de LongoMatch con el nombre del CSV de origen."""
     return load_longomatch_events(folder_id, _drive_headers())
 
 
@@ -3358,7 +3360,7 @@ def _season_drive_reports() -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
         return None, None
 
     reports = []
-    for load in (_load_match_data, _load_video_events):
+    for load in (_load_hudl_reports, _load_longomatch_reports):
         try:
             reports.append(load(folder))
         except drive_errors:
@@ -5400,8 +5402,8 @@ def main():
     try:
         with st.spinner("Cargando datos..."):
             partidos_folder_id = _get_season_subfolder_id(GOOGLE_SEASON_FOLDER_ID, "Partidos")
-            df = _load_match_data(partidos_folder_id)
-            video_df = _load_video_events(partidos_folder_id)
+            df = _load_hudl_reports(partidos_folder_id)
+            video_df = _load_longomatch_reports(partidos_folder_id)
     except (requests.RequestException, FileNotFoundError, ValueError, GoogleAuthError):
         render_sidebar(rffm.SEASON)
         st.error("No se pudieron cargar los informes de Drive. Prueba con «Actualizar datos».")
