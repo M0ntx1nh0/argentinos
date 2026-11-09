@@ -237,8 +237,12 @@ def load_longomatch_events(folder_id: str, headers: dict[str, str]) -> pd.DataFr
 
 
 def read_longomatch_reports(csvs) -> pd.DataFrame:
-    frames = [parse_longomatch_csv(text, name) for name, text, _ in csvs
-              if text.lstrip().startswith("CATEGORY:")]
+    frames = [
+        parse_longomatch_csv(text, name).assign(
+            fecha_carga=pd.to_datetime(created, utc=True, errors="coerce")
+        )
+        for name, text, created in csvs if text.lstrip().startswith("CATEGORY:")
+    ]
     if not frames:
         return pd.DataFrame()
     events = pd.concat(frames, ignore_index=True).sort_values(

@@ -1804,8 +1804,8 @@ def rival_insights(df: pd.DataFrame, rival: str, ev: pd.DataFrame) -> list[tuple
                           if directo >= 50 else
                           "Prefiere juntar pases: cerrar dentro y orientar su circulación hacia banda."))
         fin = opp[opp["fase"] == "finalizacion"]
-        if len(fin) >= 3:
-            tipo = fin["tipo_llegada"].value_counts()
+        tipo = fin["tipo_llegada"].value_counts()
+        if tipo.sum() >= 3:
             carril = fin["carril"].value_counts()
             items.append(("neg" if tipo.iloc[0] / len(fin) >= 0.5 else "warn",
                           f"Su vía de gol: {tipo.index[0].lower()}",
@@ -1815,9 +1815,12 @@ def rival_insights(df: pd.DataFrame, rival: str, ev: pd.DataFrame) -> list[tuple
         set_own = int(ev[(ev["equipo"] == "propio") & ev["fase"].isin(["corner", "tiro_libre"])].shape[0])
         items.append(("info", "Balón parado",
                       f"Acciones a balón parado: Club Argentino {set_own} · {rival} {set_rival}."))
+        items.extend(_set_piece_reading(opp, "rival", rival))
 
+    if df.empty:
+        return items
     tr = (df[(df["nivel"] == "tramo") & df["tramo_raw"].isin(TRAMOS_REGULARES)]
-          .set_index("tramo_raw")["pct_posesion"].dropna())
+          .groupby("tramo_raw", sort=False)["pct_posesion"].mean().dropna())
     weak = tr[tr < 45]
     if len(weak):
         items.append(("neg", "Momentos en los que nos quitó el balón",
@@ -1829,17 +1832,79 @@ def rival_insights(df: pd.DataFrame, rival: str, ev: pd.DataFrame) -> list[tuple
     return items
 
 
-def _rivals_overview(m: pd.DataFrame, video_df: pd.DataFrame):
-    """Tabla comparativa de todos los rivales con datos HUDL y de vídeo."""
+def _rival_fixtures(m: pd.DataFrame, video_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Indexa los informes por encuentro y conserva los vídeos sin HUDL asociado."""
+    fields = ["rival", "rival_nombre", "rival_escudo"]
+    video_files = video_df.drop_duplicates("archivo") if not video_df.empty else video_df
+    opponents = pd.concat([m.reindex(columns=fields), video_files.reindex(columns=fields)], ignore_index=True)
+    names = opponents["rival_nombre"].fillna(opponents["rival"]).map(_tactical_rival_key)
+    aliases = opponents["rival"].map(_tactical_rival_key)
+    crests = opponents["rival_escudo"].fillna("")
+    ids_by_name = {}
+    for name, alias, crest in zip(names, aliases, crests):
+        if crest:
+            for key in (name, alias):
+                ids_by_name.setdefault(key, set()).add(crest)
+    rival_keys = []
+    for name, alias, crest in zip(names, aliases, crests):
+        candidates = ids_by_name.get(name, set()) | ids_by_name.get(alias, set())
+        rival_keys.append(crest or (next(iter(candidates)) if len(candidates) == 1 else name))
+
+    m = m.assign(archivo_hudl=m.get("archivo"), rival_id=rival_keys[:len(m)])
+    if video_df.empty:
+        return m, {}
+
+    video_ids = dict(zip(video_files["archivo"], rival_keys[len(m):]))
+    rounds = m.get("jornada_rffm", pd.Series(pd.NA, index=m.index, dtype="Int64"))
+    resolved_rounds = set(video_files.get("jornada_rffm", pd.Series(dtype=int)).dropna())
+    unlinked = []
+    parts = {}
+    for filename, events in video_df.groupby("archivo", sort=False):
+        video = events.iloc[0]
+        jornada = video.get("jornada_rffm")
+        rival_id = video_ids[filename]
+        same_rival = m["rival_id"].eq(rival_id)
+        candidates = m[same_rival]
+        if pd.notna(jornada):
+            candidates = m[rounds.eq(jornada)]
+            if candidates.empty and not m.empty:
+                candidates = m[same_rival & rounds.isna() & m["competicion"].eq("Oficial")]
+        elif len(candidates) == 1 and rounds.loc[candidates.index[0]] in resolved_rounds:
+            candidates = candidates.iloc[:0]
+        if len(candidates) == 1:
+            parts.setdefault(candidates.index[0], []).append(events)
+            continue
+        venue = video.get("condicion_rffm")
+        unlinked.append({
+            "archivo": filename, "rival_id": rival_id,
+            "rival_nombre": video.get("rival_nombre", video["rival"]),
+            "rival_escudo": video.get("rival_escudo", ""),
+            "jlabel": f"J{jornada}" if pd.notna(jornada) else "Vídeo",
+            "condicion": venue if pd.notna(venue) else "", "cond": "",
+            "fecha_rffm": video.get("fecha_rffm"),
+            "gf": None, "gc": None, "res": "", "pct_posesion": None, "pct_pases": None,
+            "tiros": None, "tiros_puerta": None,
+        })
+        parts[len(m) + len(unlinked) - 1] = [events]
+    if unlinked:
+        m = pd.concat([m, pd.DataFrame(unlinked)], ignore_index=True)
+    return m, {
+        index: events[0] if len(events) == 1 else pd.concat(events, ignore_index=True)
+        for index, events in parts.items()
+    }
+
+
+def _rivals_overview(m: pd.DataFrame, video_by_match: dict):
+    """Tabla comparativa de los encuentros con datos HUDL o de vídeo."""
     cols = "56px minmax(240px,1.6fr) 74px " + " ".join(["minmax(78px,1fr)"] * 6)
     heads = ["Posesión", "Pase", "Tiros (puerta)", "Finaliz. Club Argentino", "Finaliz. rival", "Recup. / pérd."]
     html = [f'<div class="cadf-score-wrap"><div class="cadf-score" style="grid-template-columns:{cols}">'
             '<div class="cadf-score-h">J</div><div class="cadf-score-h">Rival</div>'
             '<div class="cadf-score-h">Result.</div>'
             + "".join(f'<div class="cadf-score-h">{h}</div>' for h in heads)]
-    for _, r in m.iterrows():
-        ev = _video_events_for_match(video_df, r)
-        if ev.empty:
+    for index, r in m.iterrows():
+        ev = video_by_match.get(index)
+        if ev is None:
             fin_own = fin_opp = rec = "—"
             own_bg = opp_bg = "transparent"
         else:
@@ -1850,16 +1915,24 @@ def _rivals_overview(m: pd.DataFrame, video_df: pd.DataFrame):
             rec = f"{int((own['fase'] == 'recuperacion').sum())} / {int((own['fase'] == 'perdida').sum())}"
             own_bg = "rgba(76,175,130,0.25)" if f_own > f_opp else "transparent"
             opp_bg = "rgba(232,93,117,0.25)" if f_opp > f_own else "transparent"
-        pos_bg = "rgba(106,175,230,0.22)" if r["pct_posesion"] >= 50 else "rgba(232,93,117,0.18)"
+        has_result = pd.notna(r["gf"]) and pd.notna(r["gc"])
+        result = result_chip(r["res"], f"{int(r['gf'])}-{int(r['gc'])}") if has_result else "—"
+        possession = r["pct_posesion"]
+        pos_bg = "transparent" if pd.isna(possession) else (
+            "rgba(106,175,230,0.22)" if possession >= 50 else "rgba(232,93,117,0.18)"
+        )
+        pos_label = f"{possession:.0f}%" if pd.notna(possession) else "—"
+        pass_label = f"{r['pct_pases']:.0f}%" if pd.notna(r["pct_pases"]) else "—"
+        shots = f"{r['tiros']:.0f} ({r['tiros_puerta']:.0f})" if pd.notna(r["tiros"]) else "—"
         html.append(
             f'<div class="cadf-score-j">{r["jlabel"]}</div>'
             f'<div class="cadf-score-rival cadf-score-opponent">{_crest_html(r["rival_escudo"])}'
             f'<span class="cadf-score-opponent-name">{escape(r["rival_nombre"])}</span>'
             f'<span class="cadf-tag">{r["cond"]}</span></div>'
-            f'<div>{result_chip(r["res"], f"{r["gf"]}-{r["gc"]}")}</div>'
-            f'<div class="cadf-score-c" style="background:{pos_bg}">{r["pct_posesion"]:.0f}%</div>'
-            f'<div class="cadf-score-c">{r["pct_pases"]:.0f}%</div>'
-            f'<div class="cadf-score-c">{int(r["tiros"] or 0)} ({int(r["tiros_puerta"] or 0)})</div>'
+            f'<div>{result}</div>'
+            f'<div class="cadf-score-c" style="background:{pos_bg}">{pos_label}</div>'
+            f'<div class="cadf-score-c">{pass_label}</div>'
+            f'<div class="cadf-score-c">{shots}</div>'
             f'<div class="cadf-score-c" style="background:{own_bg}">{fin_own}</div>'
             f'<div class="cadf-score-c" style="background:{opp_bg}">{fin_opp}</div>'
             f'<div class="cadf-score-c">{rec}</div>'
@@ -1869,33 +1942,64 @@ def _rivals_overview(m: pd.DataFrame, video_df: pd.DataFrame):
 
 
 def page_rivales(df: pd.DataFrame, video_df: pd.DataFrame):
-    m = matches_table(df)
+    m, video_by_match = _rival_fixtures(matches_table(df) if not df.empty else pd.DataFrame(), video_df)
     page_header("Rivales", "Cómo nos han jugado y qué conviene recordar para el próximo enfrentamiento",
-                kicker=f"Informe de rivales · Temporada {season_label(df)}")
+                kicker=f"Informe de rivales · Temporada {season_label(df) if not df.empty else rffm.SEASON}")
+    if m.empty:
+        st.info("Todavía no hay informes de partido para consultar.")
+        return
 
-    section("Comparativa de rivales",
-            "Qué partido le hicimos a cada uno. Finalizaciones y recuperaciones según el vídeo (LongoMatch); "
-            "en verde/rojo, quién finalizó más.")
-    _rivals_overview(m, video_df)
-
-    section("Perfil del rival", "Selecciona un rival para ver cómo construyó, cómo nos atacó y dónde nos hizo daño.")
-    labels = m.set_index("archivo")["etiqueta"].to_dict()
-    selected = st.selectbox("Rival", list(labels), index=len(labels) - 1, key="rival_sel", format_func=labels.get)
-    row = m[m["archivo"] == selected].iloc[0]
-    rival_name = escape(row["rival_nombre"])
-    report = df[df["archivo"] == selected]
-    ev = _video_events_for_match(video_df, row)
+    section("Perfil del rival", "Consulta todos los encuentros disponibles o elige un partido.")
+    labels = (m.sort_values("rival_escudo", key=lambda ids: ids.ne(""), kind="stable")
+              .drop_duplicates("rival_id", keep="last").set_index("rival_id")["rival_nombre"].to_dict())
+    rivals = sorted(labels, key=lambda rival_id: labels[rival_id].casefold())
+    rival_id = st.selectbox("Rival", rivals, index=rivals.index(m["rival_id"].iloc[-1]),
+                            key="rival_team", format_func=labels.get)
+    fixtures = m[m["rival_id"].eq(rival_id)]
+    options = {None: f"Todos los partidos · {len(fixtures)}"}
+    for index, row in fixtures.iterrows():
+        date = row.get("fecha_rffm")
+        details = [row["jlabel"], row["condicion"]]
+        if pd.notna(date):
+            details.append(date.strftime("%d/%m/%Y"))
+        if pd.isna(row["archivo_hudl"]):
+            details.append("Solo vídeo")
+            if row["jlabel"] == "Vídeo":
+                details.append(row["archivo"])
+        label = " · ".join(filter(None, details))
+        options[index] = label if label not in options.values() else f"{label} · {row['archivo']}"
+    selected = st.selectbox("Partidos", list(options), key=f"rival_match_{rival_id}", format_func=options.get)
+    if selected is not None:
+        fixtures = fixtures.loc[[selected]]
+    rival_name = escape(labels[rival_id])
+    sources = fixtures["archivo_hudl"].dropna()
+    report = df[df["archivo"].isin(sources)] if not df.empty else df
+    tagged = [video_by_match[index] for index in fixtures.index if index in video_by_match]
+    ev = pd.concat(tagged, ignore_index=True) if tagged else video_df.iloc[:0]
     opp = ev[ev["equipo"] == "rival"] if not ev.empty else ev
+    st.caption(f"Informes disponibles · HUDL {len(sources)}/{len(fixtures)} · LongoMatch {len(tagged)}/{len(fixtures)}.")
 
     cols = st.columns(5)
     fin_opp = int((opp["fase"] == "finalizacion").sum()) if not ev.empty else None
     starts = opp.loc[opp["fase"] == "inicio", "inicio_tipo"] if not ev.empty else pd.Series(dtype=str)
+    results = fixtures.dropna(subset=["gf", "gc"])
+    gf, gc = results["gf"].sum(), results["gc"].sum()
+    possession = fixtures["pct_posesion"].mean()
+    result_counts = results["res"].value_counts()
+    result_hint = " · ".join(f"{result_counts.get(code, 0)} {code}" for code in ("V", "E", "D"))
+    result_color = DORADO
+    if len(fixtures) == 1 and not results.empty:
+        row = results.iloc[0]
+        result_hint = f"{ {'V': 'Victoria', 'E': 'Empate', 'D': 'Derrota'}[row['res']] } · {row['condicion']}"
+        result_color = RESULT_COLORS[row["res"]]
     for col, html in zip(cols, [
-        metric_card("Resultado", f"{row['gf']}–{row['gc']}", "",
-                    hint=f"{ {'V': 'Victoria', 'E': 'Empate', 'D': 'Derrota'}[row['res']] } · {row['condicion']}",
-                    accent=RESULT_COLORS[row["res"]]),
-        metric_card("Posesión del rival", f"{100 - row['pct_posesion']:.0f}", "%", accent=GRIS_MEDIO),
-        metric_card("Goles del rival", row["gc"], "", accent=ROJO),
+        metric_card("Marcador acumulado" if len(fixtures) > 1 else "Resultado",
+                    f"{gf:.0f}–{gc:.0f}" if not results.empty else "—", "",
+                    hint=result_hint if not results.empty else "Sin marcador HUDL", accent=result_color),
+        metric_card("Posesión del rival", f"{100 - possession:.0f}" if pd.notna(possession) else "—",
+                    "%" if pd.notna(possession) else "",
+                    hint="Media de los informes HUDL" if len(fixtures) > 1 else "", accent=GRIS_MEDIO),
+        metric_card("Goles del rival", f"{gc:.0f}" if not results.empty else "—", "", accent=ROJO),
         metric_card("Finalizaciones del rival", fin_opp if fin_opp is not None else "—", "",
                     hint="según vídeo" if fin_opp is not None else "sin vídeo etiquetado", accent=ROJO),
         metric_card("Inicios en largo", f"{_share(starts, 'Largo'):.0f}" if starts.notna().sum() else "—",
@@ -1905,6 +2009,15 @@ def page_rivales(df: pd.DataFrame, video_df: pd.DataFrame):
 
     insight_panel(rival_insights(report, rival_name, ev),
                   heading=f"Claves para el próximo enfrentamiento ante {rival_name}")
+
+    section("Comparativa de partidos",
+            "Resultados y estadísticas de los encuentros seleccionados. Las finalizaciones y recuperaciones proceden de LongoMatch.")
+    _rivals_overview(fixtures, video_by_match)
+
+    overview = st.expander("Comparativa de todos los rivales", key="all_rivals", on_change="rerun")
+    if overview.open:
+        with overview:
+            _rivals_overview(m, video_by_match)
 
     if not ev.empty:
         c1, c2 = st.columns(2)
@@ -1938,10 +2051,13 @@ def page_rivales(df: pd.DataFrame, video_df: pd.DataFrame):
             fig.update_yaxes(title_text="Acciones", range=[0, max(int(build.to_numpy().max()), 1) * 1.2])
             chart(fig)
     else:
-        st.info("Este partido aún no tiene CSV de LongoMatch: el perfil táctico del rival aparecerá al subirlo.")
+        st.info("La selección aún no tiene un CSV de LongoMatch vinculado.")
+
+    if report.empty:
+        return
 
     section("¿En qué momentos nos quitó el balón?",
-            "Posesión del Club Argentino por tramo ante este rival. En rojo, tramos por debajo del 45%.")
+            "Media de posesión del Club Argentino por tramo en los informes seleccionados. En rojo, por debajo del 45%.")
     tramos_df = report[report["nivel"] == "tramo"]
     tramos_mean = (
         tramos_df.groupby("tramo_raw")[["pct_posesion", "pct_pases"]]
@@ -2302,6 +2418,7 @@ def _tactical_heatmap(events: pd.DataFrame, title: str, color: str = AZUL_CELEST
 RFFM_RIVAL_ALIASES = {"uda": "10657147", "cue": "8961590", "udue": "8961590"}
 RFFM_NON_LEAGUE_RIVALS = {
     "adnuevacastilla": ("A.D. Nueva Castilla", "3359528"),
+    "anc": ("A.D. Nueva Castilla", "3359528"),
     "adtorrejon": ("A.D. Torrejón C.F.", "15374113"),
 }
 
@@ -2520,11 +2637,9 @@ def _tactical_origin_by_context(events: pd.DataFrame, phase: str, context: str) 
     return table.reindex(index=order, columns=["Generada", "No generada", "Sin etiquetar"], fill_value=0)
 
 
-def _tactical_transition_minimap(transitions: pd.DataFrame, dimension: str, title: str) -> go.Figure:
-    """Representa la transición defensiva por zonas o por carriles sobre un mini campo."""
-    groups = ["Zona 1", "Zona 2", "Zona 3"] if dimension == "zona" else ["Izquierdo", "Central", "Derecho"]
-    table = pd.crosstab(transitions[dimension], transitions["transicion_defensiva"])
-    table = table.reindex(index=groups, columns=["PTP", "Repliegue", "Mixta"], fill_value=0)
+def _tactical_breakdown_pitch(table: pd.DataFrame, title: str, *, by_zone: bool = True,
+                              color_rgb: str = "106,175,230") -> go.Figure:
+    """Representa un total y su desglose en cada tercio o carril del campo."""
     totals = table.sum(axis=1)
     maximum = max(int(totals.max()), 1)
 
@@ -2542,10 +2657,12 @@ def _tactical_transition_minimap(transitions: pd.DataFrame, dimension: str, titl
                   line=dict(color="rgba(255,255,255,.5)", width=1))
 
     lane_ranges = {"Izquierdo": (2 * 68 / 3, 68), "Central": (68 / 3, 2 * 68 / 3), "Derecho": (0, 68 / 3)}
-    for index, group in enumerate(groups):
-        if dimension == "zona":
+    for index, (group, counts) in enumerate(table.iterrows()):
+        if by_zone:
             x0, x1, y0, y1 = index * 35 + 1.2, (index + 1) * 35 - 1.2, 1.2, 66.8
             label_x, label_y = index * 35 + 17.5, 34
+            fig.add_annotation(x=label_x, y=-4, text=group, showarrow=False,
+                               font=dict(color=GRIS_MEDIO, size=10))
         else:
             y0, y1 = lane_ranges[group]
             x0, x1 = 1.2, 103.8
@@ -2553,20 +2670,30 @@ def _tactical_transition_minimap(transitions: pd.DataFrame, dimension: str, titl
         total = int(totals[group])
         alpha = .08 if total == 0 else .18 + .62 * total / maximum
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0 + 1.2, y1=y1 - 1.2,
-                      fillcolor=f"rgba(106,175,230,{alpha:.2f})",
+                      fillcolor=f"rgba({color_rgb},{alpha:.2f})",
                       line=dict(color="rgba(255,255,255,.12)", width=1))
+        separator = "<br>" if by_zone else " · "
+        detail = separator.join(f"{name} {value}" for name, value in counts.items())
+        heading = "" if by_zone else f"<span style='font-size:10px'>{group}</span> "
         fig.add_annotation(
             x=label_x, y=label_y,
-            text=(f"<b>{total}</b><br><span style='font-size:10px'>"
-                  f"PTP {int(table.loc[group, 'PTP'])} · Rep {int(table.loc[group, 'Repliegue'])} · Mixta {int(table.loc[group, 'Mixta'])}</span>"),
+            text=f"{heading}<b>{total}</b><br><span style='font-size:10px'>{detail}</span>",
             showarrow=False, font=dict(color=BLANCO, size=17, family="Inter"),
         )
 
     fig.add_annotation(x=52.5, y=73, text="Ataque del Club Argentino  →", showarrow=False,
                        font=dict(color=DORADO, size=10, family="Inter"))
     fig.update_xaxes(range=[-2, 107], visible=False, fixedrange=True)
-    fig.update_yaxes(range=[-2, 78], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
+    fig.update_yaxes(range=[-8, 78], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
     return fig
+
+
+def _tactical_transition_minimap(transitions: pd.DataFrame, dimension: str, title: str) -> go.Figure:
+    """Representa la transición defensiva por zonas o por carriles sobre un mini campo."""
+    groups = ["Zona 1", "Zona 2", "Zona 3"] if dimension == "zona" else ["Izquierdo", "Central", "Derecho"]
+    table = pd.crosstab(transitions[dimension], transitions["transicion_defensiva"])
+    table = table.reindex(index=groups, columns=["PTP", "Repliegue", "Mixta"], fill_value=0)
+    return _tactical_breakdown_pitch(table, title, by_zone=dimension == "zona")
 
 
 def _remate_share(events: pd.DataFrame) -> tuple[int, int]:
@@ -2753,6 +2880,27 @@ def _set_piece_map(events: pd.DataFrame, title: str, rgb: str) -> go.Figure:
     return fig
 
 
+def _set_piece_reading(events: pd.DataFrame, team: str, name: str) -> list[tuple[str, str, str]]:
+    if "destino_bp" not in events:
+        return []
+    tagged = events.loc[events["equipo"].eq(team) & events["fase"].isin(["corner", "tiro_libre"])]
+    tagged = tagged.dropna(subset=["destino_bp"])
+    if len(tagged) < 3:
+        return []
+    counts = tagged["destino_bp"].value_counts()
+    highest = counts.iloc[0]
+    leaders = counts.index[counts.eq(highest)].str.lower()
+    title = "Destino más frecuente" if len(leaders) == 1 else "Destinos más frecuentes"
+    n, shots = _remate_share(tagged)
+    return [(
+        "info" if team == "propio" else "warn",
+        f"{name} · {title} a balón parado",
+        f"{' y '.join(leaders).capitalize()} · {highest} de {len(tagged)} envíos con destino etiquetado"
+        + (" por zona." if len(leaders) > 1 else ".")
+        + (f" Hubo remate en <b>{shots} de {n}</b> envíos con desenlace registrado." if n else ""),
+    )]
+
+
 def _set_piece_block(events: pd.DataFrame, rival_label: str):
     """Destino de córners y faltas, a favor y en contra, y desde dónde se sacan las faltas."""
     if "destino_bp" not in events.columns or events["destino_bp"].dropna().empty:
@@ -2801,16 +2949,7 @@ def _set_piece_block(events: pd.DataFrame, rival_label: str):
     fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.16, x=0))
     chart(fig)
 
-    items = []
-    for team, who in [("propio", "Club Argentino"), ("rival", rival_label)]:
-        sel = bp[(bp["equipo"] == team) & bp["destino_bp"].notna()]
-        if len(sel) >= 3:
-            top = sel["destino_bp"].value_counts()
-            n, shots = _remate_share(sel)
-            items.append(("info" if team == "propio" else "warn", f"{who}: envío preferido al {top.index[0].lower()}",
-                          f"{top.iloc[0]} de {len(sel)} balones parados con destino etiquetado."
-                          + (f" Solo <b>{shots} de {n}</b> acaban en remate." if n else "")))
-    insight_panel(items)
+    insight_panel(_set_piece_reading(bp, "propio", "Club Argentino"))
 
 
 def _render_tactical_match_summary(events: pd.DataFrame, rival: str):
@@ -2970,6 +3109,7 @@ def _render_tactical_match_summary(events: pd.DataFrame, rival: str):
             "Recuperaciones · Generada: la ganamos con un quite o una buena presión. No generada: error del rival. "
             "Pérdidas · Generada: el rival nos roba o presiona bien. No generada: regalamos el balón."
         )
+        st.caption("Zona 1 · tercio defensivo. Zona 2 · tercio medio. Zona 3 · tercio ofensivo.")
         c1, c2 = st.columns(2)
         for column, phase, label, palette in [
             (c1, "recuperacion", "Recuperaciones", {
@@ -2991,17 +3131,25 @@ def _render_tactical_match_summary(events: pd.DataFrame, rival: str):
                         {int(breakdown.get('Generada', 0))} generadas · {int(breakdown.get('No generada', 0))} no generadas
                     </div>
                 </div>""", unsafe_allow_html=True)
-                for context, context_label in [("parte", "Por tiempo"), ("zona", "Por zona")]:
-                    table = _tactical_origin_by_context(own, phase, context)
-                    fig = go.Figure()
-                    for column_name in ["Generada", "No generada", "Sin etiquetar"]:
-                        if table[column_name].sum():
-                            fig.add_trace(depth_bar(palette[column_name], column_name, table.index, table[column_name],
-                                                    text=table[column_name]))
-                    t(fig, height=225, barmode="stack", margin=dict(t=40, b=32, l=35, r=10),
-                      title=f"{label} · generadas/no generadas · {context_label.lower()}")
-                    fig.update_yaxes(title="Eventos")
-                    chart(fig)
+                table = _tactical_origin_by_context(own, phase, "parte")
+                fig = go.Figure()
+                for column_name, color in palette.items():
+                    if table[column_name].sum():
+                        fig.add_trace(depth_bar(color, column_name, table.index, table[column_name],
+                                                text=table[column_name]))
+                t(fig, height=225, barmode="stack", margin=dict(t=40, b=32, l=35, r=10),
+                  title=f"{label} · generadas/no generadas · por tiempo")
+                fig.update_yaxes(title="Eventos")
+                chart(fig)
+
+                zones = _tactical_origin_by_context(own, phase, "zona")
+                missing_zone = total - zones.to_numpy().sum()
+                if not zones["Sin etiquetar"].any():
+                    zones = zones.drop(columns="Sin etiquetar")
+                chart(_tactical_breakdown_pitch(zones, f"{label} · por zona",
+                                                color_rgb="76,175,130" if phase == "recuperacion" else "232,93,117"))
+                if missing_zone:
+                    st.caption(f"Sin zona etiquetada · {missing_zone}")
 
         responses = _tactical_counts(
             own.loc[own["fase"] == "transicion_defensiva", "transicion_defensiva"].dropna(),
@@ -3022,6 +3170,8 @@ def _render_tactical_match_summary(events: pd.DataFrame, rival: str):
             chart(_tactical_transition_minimap(
                 transitions, "carril", "Transición defensiva · por carril",
             ))
+        st.caption("PTP = presión tras pérdida. Los campogramas cuentan las transiciones con respuesta "
+                   "y zona o carril etiquetados.")
 
         tramo_order = ["0–15'", "15–30'", "30–45+'", "45–60'", "60–75'", "75+'"]
         table = pd.crosstab(transitions["tramo"], transitions["transicion_defensiva"])
@@ -3402,6 +3552,12 @@ def _calendar_sources(calendar: pd.DataFrame, reports: pd.DataFrame) -> tuple[di
     by_round, unmatched = {}, []
     for report in reports.drop_duplicates(["archivo", "rival"]).to_dict("records"):
         filename = report["archivo"]
+        key = _tactical_rival_key(report["rival"])
+        if key in RFFM_NON_LEAGUE_RIVALS or re.search(
+            r"(?:^|[\W_])(?:copa|amistoso|pretemporada)(?=$|[\W_])", filename, re.IGNORECASE
+        ):
+            unmatched.append(filename)
+            continue
         round_label = re.search(r"(?:^|[\W_])J(?:ornada)?[\s_-]*(\d{1,2})(?=$|[\W_])", filename, re.IGNORECASE)
         try:
             date = _match_date(filename, None)
@@ -3415,7 +3571,6 @@ def _calendar_sources(calendar: pd.DataFrame, reports: pd.DataFrame) -> tuple[di
         elif pd.notna(date):
             candidates = calendar[calendar["Fecha"].eq(date.date().isoformat())]
         else:
-            key = _tactical_rival_key(report["rival"])
             if key in RFFM_RIVAL_ALIASES:
                 candidates = played[played["ID rival RFFM"].eq(RFFM_RIVAL_ALIASES[key])]
             else:
@@ -3424,6 +3579,10 @@ def _calendar_sources(calendar: pd.DataFrame, reports: pd.DataFrame) -> tuple[di
                     return any(_names_match(key, _tactical_rival_key(option)) for option in (name, short))
 
                 candidates = played[played["Rival"].map(matches_name)]
+            uploaded = report.get("fecha_carga")
+            if len(candidates) > 1 and pd.notna(uploaded):
+                cutoff = uploaded.tz_convert("Europe/Madrid").date().isoformat()
+                candidates = candidates[candidates["Fecha"].le(cutoff)]
             if report.get("condicion") and len(candidates) > 1:
                 candidates = candidates[candidates["Condición"].eq(report["condicion"])]
 
@@ -3452,6 +3611,7 @@ def _with_match_display(reports: pd.DataFrame, calendar: pd.DataFrame,
     return reports.assign(
         jornada_rffm=official_round, rival_nombre=names,
         rival_escudo=crests,
+        condicion_rffm=pd.Series(official_round, index=reports.index).map(calendar.set_index("Jornada")["Condición"]),
         fecha_rffm=pd.to_datetime([match[3] if isinstance(match, tuple) else None for match in linked]),
         etiqueta_partido=[f"J{j} · {name}" if pd.notna(j) else name for j, name in zip(official_round, names)],
     )
@@ -5625,7 +5785,7 @@ def main():
         st.error("No se pudieron cargar los informes de Drive. Prueba con «Actualizar datos».")
         return
 
-    if df.empty:
+    if df.empty and (st.session_state.page != "Rivales" or video_df.empty):
         render_sidebar(rffm.SEASON)
         st.error("No se encontraron informes de partido en Drive.")
         return
@@ -5635,26 +5795,28 @@ def main():
     except (OSError, ValueError):
         pass
     else:
-        season_files = df.loc[df["tramo_raw"].eq(f"{rffm.SEASON} Season"), "archivo"]
-        official = df[df["archivo"].isin(season_files) & df["nivel"].eq("temporada") & df["competicion"].eq("Oficial")]
+        official = df
+        if not df.empty:
+            season_files = df.loc[df["tramo_raw"].eq(f"{rffm.SEASON} Season"), "archivo"]
+            official = df[df["archivo"].isin(season_files) & df["nivel"].eq("temporada") & df["competicion"].eq("Oficial")]
         hudl_sources, _ = _calendar_sources(calendar, official)
         video_sources, _ = _calendar_sources(calendar, video_df)
         df = _with_match_display(df, calendar, hudl_sources)
         video_df = _with_match_display(video_df, calendar, video_sources)
-    video_df, video_unmatched, video_missing = align_video_rivals(df, video_df)
-    names = df.drop_duplicates("rival").set_index("rival").get("rival_nombre", {})
-    st.session_state["video_status"] = (video_unmatched, [names.get(rival, rival) for rival in video_missing])
-    temporada = season_label(df)
+    if not df.empty:
+        video_df, video_unmatched, video_missing = align_video_rivals(df, video_df)
+        names = df.drop_duplicates("rival").set_index("rival").get("rival_nombre", {})
+        st.session_state["video_status"] = (video_unmatched, [names.get(rival, rival) for rival in video_missing])
+    temporada = rffm.SEASON if df.empty else season_label(df)
     page = render_sidebar(temporada)
     render_topbar(page, temporada)
     if page == "Partido":
         page_partido(df, video_df)
-    elif page in ("Rivales", "Jugadores"):
-        df_oficial, video_oficial = split_league_reports(df, video_df)
-        if page == "Rivales":
-            page_rivales(df_oficial, video_oficial)
-        else:
-            page_jugadores(video_oficial)
+    elif page == "Rivales":
+        page_rivales(df, video_df)
+    elif page == "Jugadores":
+        _, video_oficial = split_league_reports(df, video_df)
+        page_jugadores(video_oficial)
 
 
 if __name__ == "__main__":
