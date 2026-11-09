@@ -3460,9 +3460,10 @@ def _report_chip(source: str, files: list[str], checked: bool, played: bool) -> 
 
 
 def _render_calendar_match_list(cards: list[str], label: str):
-    focus = ' tabindex="0"' if len(cards) > 10 else ""
-    st.markdown(f'<div class="cadf-match-list" role="region" aria-label="{label}"{focus}>'
-                + "".join(cards) + "</div>", unsafe_allow_html=True)
+    scroll_class, focus = (" is-scrollable", ' tabindex="0"') if len(cards) > 10 else ("", "")
+    st.markdown(f'<div class="cadf-calendar-frame"><div class="cadf-match-list{scroll_class}" '
+                f'role="region" aria-label="{label}"{focus}>'
+                + "".join(cards) + "</div></div>", unsafe_allow_html=True)
 
 
 def _render_season_calendar(calendar: pd.DataFrame, results: pd.DataFrame, hudl: pd.DataFrame | None,
@@ -3528,7 +3529,8 @@ def _render_season_calendar(calendar: pd.DataFrame, results: pd.DataFrame, hudl:
     st.download_button("Descargar calendario (CSV)", rffm.csv_bytes(export),
                        file_name=f"calendario-argentino-{rffm.SEASON}.csv", mime="text/csv")
     if next_match is not None:
-        st.markdown('<h3 class="cadf-next-label">Próximo partido</h3>' + rows[next_match], unsafe_allow_html=True)
+        st.markdown('<div class="cadf-calendar-frame"><h3 class="cadf-next-label">Próximo partido</h3>'
+                    + rows[next_match] + "</div>", unsafe_allow_html=True)
 
     remaining = [index for index in pending.index if index != next_match]
     pending_label = "Resto por jugar" if next_match is not None else "Por jugar"
@@ -5215,10 +5217,14 @@ def inject_css():
     .cadf-insight-body b {{ color: {BLANCO}; }}
 
     /* ── Filas de resultados ── */
+    .cadf-calendar-frame {{ container: calendar / inline-size; }}
     .cadf-match-list {{
-        --match-height: 82px;
+        --match-height: 96px;
         --match-gap: 6px;
-        display: grid; grid-auto-rows: var(--match-height); gap: var(--match-gap);
+        display: grid; gap: var(--match-gap);
+    }}
+    .cadf-match-list.is-scrollable {{
+        grid-auto-rows: var(--match-height);
         max-height: calc(10 * var(--match-height) + 9 * var(--match-gap));
         overflow-y: auto; scrollbar-color: {AZUL_CLARO} {AZUL_OSCURO};
         border-radius: 11px;
@@ -5333,16 +5339,16 @@ def inject_css():
         .cadf-hero h1 {{ font-size: 1.5rem; }}
         .cadf-hero-aside {{ align-items: flex-start; }}
     }}
-    @media (max-width: 1100px) {{
-        .cadf-match-list {{ --match-height: 100px; }}
+    @container calendar (max-width: 950px) {{
+        .cadf-match-list {{ --match-height: 110px; }}
         .cadf-row {{ grid-template-columns: 30px minmax(0, 1fr) 64px 30px; }}
         .cadf-row-stat {{ display: none; }}
         .cadf-row-reports {{ grid-column: 2 / -1; display: flex; flex-wrap: wrap; }}
     }}
-    @media (max-width: 640px) {{
-        .cadf-match-list {{ --match-height: 144px; }}
+    @container calendar (max-width: 520px) {{
+        .cadf-match-list {{ --match-height: 190px; }}
         .cadf-row {{ grid-template-columns: 26px minmax(0, 1fr) 30px; gap: 4px 8px; padding-inline: 10px; }}
-        .cadf-row-rival {{ grid-column: 2 / -1; }}
+        .cadf-row-rival {{ grid-column: 2 / -1; font-size: 0.9rem; line-height: 1.35; }}
         .cadf-row-score {{ grid-column: 2; justify-self: start; }}
     }}
 
