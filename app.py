@@ -3924,17 +3924,31 @@ def _standings_bump(history: pd.DataFrame, standings: pd.DataFrame, team_ids: li
 
 
 def _render_standings_evolution(standings: pd.DataFrame):
-    section("¿Cómo vamos?", "Evolución de los puestos oficiales por jornada · Los tres primeros de la tabla y el Argentino.")
+    section("¿Cómo vamos?", "Evolución de los puestos oficiales por jornada. La selección inicial incluye al "
+            "Argentino y a los tres rivales mejor clasificados.")
     history_file = _drive_rffm_bytes(RFFM_DATA_FOLDER, rffm.HISTORY_FILE.name)
     history = rffm.load_standings_history(standings, io.BytesIO(history_file) if history_file else rffm.HISTORY_FILE)
     if history["Jornada"].nunique() < 2:
         st.caption("El gráfico aparecerá cuando el historial incluya al menos dos jornadas.")
         return
     ordered = standings.sort_values("Posición").set_index("ID equipo RFFM")["Equipo"]
-    default_ids = list(dict.fromkeys([*ordered.index[:3], rffm.TEAM_ID]))
-    extras = st.multiselect("Añadir equipos a la comparación", [team for team in ordered.index if team not in default_ids],
-                            format_func=ordered.get, key="season_compare_teams")
-    chart(_standings_bump(history, standings, [*default_ids, *extras]))
+    default_ids = [*ordered.drop(index=rffm.TEAM_ID).index[:3], rffm.TEAM_ID]
+    key = "season_bump_teams"
+    previous_selection = st.session_state.get(key)
+    if previous_selection is None or previous_selection == st.session_state.get("season_bump_defaults"):
+        selection = default_ids
+    else:
+        selection = [team for team in previous_selection if team in ordered.index]
+    if selection != previous_selection:
+        st.session_state[key] = selection
+    st.session_state["season_bump_defaults"] = default_ids
+
+    team_ids = st.multiselect("Equipos en la comparación", ordered.index.tolist(),
+                             format_func=ordered.get, key=key, placeholder="Selecciona equipos")
+    if not team_ids:
+        st.caption("Selecciona al menos un equipo para ver su evolución.")
+        return
+    chart(_standings_bump(history, standings, team_ids))
     missing = sorted(set(range(1, int(standings["Jornada"].max()) + 1)) - set(history["Jornada"]))
     if missing:
         st.caption("Sin clasificación oficial descargada para " + ", ".join(f"J{j}" for j in missing) + ".")
@@ -3947,7 +3961,7 @@ def page_temporada():
         ["Información general", "Información de rendimiento"], key="season_view", on_change="rerun",
     )
     # Conserva los filtros del panel oculto al alternar las dos vistas.
-    hidden_filter = "season_pass_mode" if general_tab.open else "season_compare_teams"
+    hidden_filter = "season_pass_mode" if general_tab.open else "season_bump_teams"
     if hidden_filter in st.session_state:
         st.session_state[hidden_filter] = st.session_state[hidden_filter]
 
