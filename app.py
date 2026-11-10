@@ -3956,6 +3956,49 @@ def _render_standings_evolution(standings: pd.DataFrame):
         st.caption("Sin clasificación oficial descargada para " + ", ".join(f"J{j}" for j in missing) + ".")
 
 
+def _render_results_matrix(standings: pd.DataFrame, group_calendar: pd.DataFrame | None):
+    section("Matriz de resultados del grupo",
+            "Local en la fila, visitante en la columna. El marcador se lee en ese orden. "
+            "Los equipos siguen el orden de la clasificación. El guion indica que aún no hay marcador oficial.")
+    if group_calendar is None:
+        st.caption("La matriz estará disponible al actualizar el calendario de la RFFM con los cruces del grupo.")
+        return
+
+    ordered = standings.sort_values("Posición").set_index("ID equipo RFFM")["Equipo"]
+    teams = [(team_id, escape(name.strip())) for team_id, name in ordered.items()]
+    fixtures = group_calendar.set_index(rffm.GROUP_TEAMS)[["Resultado", "Jornada"]].to_dict("index")
+    header = ['<th scope="col">Local ↓ · Visitante →</th>']
+    for position, (team_id, name) in enumerate(teams, 1):
+        accent = ' class="cadf-matrix-own"' if team_id == rffm.TEAM_ID else ""
+        header.append(f'<th scope="col"{accent} title="{name}" aria-label="{name}">'
+                      f'<div class="cadf-matrix-team">{_crest_html(team_id)}<span>{position}</span></div></th>')
+
+    rows = []
+    for position, (home_id, home_name) in enumerate(teams, 1):
+        accent = ' class="cadf-matrix-own"' if home_id == rffm.TEAM_ID else ""
+        cells = [f'<th scope="row"{accent}><span>{position}</span> {home_name}</th>']
+        for away_id, away_name in teams:
+            if home_id == away_id:
+                cells.append('<td class="cadf-matrix-blocked" aria-label="Sin enfrentamiento"></td>')
+                continue
+            fixture = fixtures.get((home_id, away_id))
+            if fixture is None:
+                cells.append('<td class="cadf-matrix-unplayed" title="Sin cruce en el calendario oficial"></td>')
+                continue
+            score = fixture["Resultado"]
+            style = "cadf-matrix-played" if score else "cadf-matrix-unplayed"
+            if rffm.TEAM_ID in (home_id, away_id):
+                style += " cadf-matrix-own"
+            label = f'J{fixture["Jornada"]} · {home_name} / {away_name}'
+            cells.append(f'<td class="{style}" title="{label}">{escape(score) if score else "—"}</td>')
+        rows.append(f'<tr>{"".join(cells)}</tr>')
+
+    st.markdown('<div class="cadf-standing-wrap" role="region" aria-label="Matriz de resultados" tabindex="0">'
+                '<table class="cadf-matrix" aria-label="Resultados oficiales del grupo">'
+                f'<thead><tr>{"".join(header)}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+
 def page_temporada():
     page_header("Temporada", "Primera Aficionado · Grupo 2",
                 kicker=f"Club Argentino · Temporada {rffm.SEASON}")
@@ -3997,7 +4040,7 @@ def page_temporada():
                     alert = {"error": st.error, "success": st.success, "info": st.info}[status]
                     alert(f"**{title}** · {finished}\n\n{detail}")
             with st.expander("Descarga manual de datos RFFM"):
-                st.caption("Genera el calendario, la clasificación y su historial para descargarlos como CSV.")
+                st.caption("Genera el calendario del grupo, la clasificación y su historial para descargarlos como CSV.")
                 if RFFM_DRIVE_WRITE_ENABLED:
                     st.caption("Para guardar los datos directamente en Drive, usa «Actualizar RFFM y guardar en Drive».")
                 else:
@@ -4043,8 +4086,10 @@ def page_temporada():
 
         source_matches = {"HUDL": {}, "LongoMatch": {}}
         results = pd.DataFrame()
+        group_calendar = None
         try:
-            calendar, calendar_in_drive = _read_rffm_table(rffm.load_calendar, rffm.CALENDAR_FILE)
+            (calendar, group_calendar), calendar_in_drive = _read_rffm_table(
+                rffm.load_competition_calendar, rffm.CALENDAR_FILE)
         except (OSError, ValueError):
             if general_tab.open:
                 st.info("Falta el archivo calendario.csv en «Calendario y clasificación».")
@@ -4080,6 +4125,7 @@ def page_temporada():
 
         if standings is not None:
             _render_standings_evolution(standings)
+            _render_results_matrix(standings, group_calendar)
 
     if performance_tab.open:
         with performance_tab:
@@ -5590,6 +5636,26 @@ def inject_css():
     .cadf-standing tbody tr.cadf-own-team {{ background: #385575; box-shadow: inset 4px 0 {DORADO}; }}
     .cadf-standing td:first-child, .cadf-standing td:last-child {{ font-weight: 800; }}
     .cadf-standing td:last-child {{ color: #f1cf70; }}
+
+    table.cadf-matrix {{ width: 100%; margin: 0; background: {PLOT_BG}; border: 0; }}
+    .cadf-matrix th, .cadf-matrix td {{
+        border: 1px solid rgba(200,214,229,0.12); padding: 5px; text-align: center;
+        font-size: 0.82rem; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 43px;
+    }}
+    .cadf-matrix th {{ background: {AZUL_MEDIO}; color: {GRIS_MEDIO}; }}
+    .cadf-matrix th:first-child {{
+        position: sticky; left: 0; z-index: 1; text-align: left; padding-inline: 9px; width: 1%;
+        min-width: 205px; max-width: 250px; white-space: normal;
+    }}
+    .cadf-matrix th:first-child span {{ color: {GRIS_MEDIO}; margin-right: 5px; }}
+    .cadf-matrix-team {{ display: flex; flex-direction: column; align-items: center; gap: 3px; }}
+    .cadf-matrix-team .cadf-medallion {{ width: 26px; height: 26px; flex-basis: auto; }}
+    .cadf-matrix .cadf-matrix-own {{ background: #385575; color: #f1cf70; }}
+    .cadf-matrix-played {{ font-weight: 800; }}
+    .cadf-matrix td.cadf-matrix-unplayed {{ color: #a6b6ce; }}
+    .cadf-matrix td.cadf-matrix-blocked {{
+        background: repeating-linear-gradient(135deg, #17253f 0 5px, #21314d 5px 7px);
+    }}
 
     .cadf-points-map {{ max-height: 775px; overflow: auto; border-radius: 12px;
                         background: {PLOT_BG}; border: 1px solid rgba(106,175,230,0.22); }}
