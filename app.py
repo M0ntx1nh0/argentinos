@@ -3903,8 +3903,10 @@ def _standings_bump(history: pd.DataFrame, standings: pd.DataFrame, team_ids: li
                                  connectgaps=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=rounds, y=[int(rank) if pd.notna(rank) else None for rank in ranks],
                                  customdata=[int(pts) if pd.notna(pts) else None for pts in positions["Pts"]],
-                                 mode="markers", name=name, legendgroup=team_id,
-                                 marker=dict(color=color, size=13 if own else 9, line=dict(color=PLOT_BG, width=1.5)),
+                                 mode="markers+text", name=name, legendgroup=team_id,
+                                 marker=dict(color=color, size=24 if own else 22, line=dict(color=PLOT_BG, width=1.5)),
+                                 texttemplate="<b>%{y}</b>", textposition="middle center",
+                                 textfont=dict(color="#101A2B", size=12),
                                  hovertemplate=f"<b>{escape(name)}</b><br>J%{{x}} · Puesto %{{y}} · %{{customdata}} pts<extra></extra>"))
         final_rank = ranks.loc[final_round]
         if pd.notna(final_rank) and _crest_source(team_id):
