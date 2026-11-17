@@ -75,7 +75,8 @@ NIVEL_MAP = {
     "90+": "tramo",
 }
 
-SECTION_HEADERS = {"Partidos", "Por Parte", "Por Minutos"}
+SECTION_HEADERS = {"Partidos", "Por Parte", "Por Minutos", "By Half", "By Minutes"}
+HALF_LABELS = {"1st Half": "1º mitad", "2nd Half": "2º mitad"}
 
 # Columnas donde "0" es un dato válido (no ausencia de dato)
 ZERO_IS_VALID = {"goles_enc", "goles", "tiros", "tiros_puerta", "centros",
@@ -177,7 +178,7 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
     raw = raw[cols_to_keep]
 
     # Eliminar filas de cabecera repetidas y filas todo vacías/ceros
-    header_mask = raw.iloc[:, 0].isin(SECTION_HEADERS)
+    header_mask = raw.iloc[:, 0].str.strip().isin(SECTION_HEADERS)
     zero_mask   = raw.apply(
         lambda r: all(str(v).strip() in ("0", "", "nan") for v in r), axis=1
     )
@@ -186,6 +187,7 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
     rows = []
     for _, row in raw.iterrows():
         tramo_raw = str(row.iloc[0]).strip()
+        tramo_raw = HALF_LABELS.get(tramo_raw, tramo_raw)
         nivel = (
             "temporada"
             if re.fullmatch(r"\d{4}-\d{4} Season", tramo_raw)

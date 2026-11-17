@@ -4339,17 +4339,14 @@ def _workbook_to_dataframe(workbook_like) -> pd.DataFrame:
     import openpyxl
 
     wb = openpyxl.load_workbook(workbook_like, data_only=True, read_only=True)
-    if "_synced_data" not in wb.sheetnames:
-        return pd.DataFrame()
-
-    ws = wb["_synced_data"]
-    rows = list(ws.iter_rows(values_only=True))
-    if len(rows) < 2:
-        return pd.DataFrame()
-
-    headers = [str(h).strip() if h else "" for h in rows[0]]
-    data = [dict(zip(headers, r)) for r in rows[1:]]
-    return pd.DataFrame(data)
+    try:
+        if "_synced_data" not in wb.sheetnames:
+            return pd.DataFrame()
+        rows = wb["_synced_data"].values
+        headers = [str(h).strip() if h else "" for h in next(rows, ())]
+        return pd.DataFrame(dict(zip(headers, row)) for row in rows)
+    finally:
+        wb.close()
 
 
 def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -4379,41 +4376,50 @@ def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             df = df.rename(columns={source: target})
 
     for col in ["distancia", "carga", "vel_max", "accel_max", "accel_count", "hsr_dist", "hsr_count"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    if "fecha" in df.columns:
-        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-        df = df.dropna(subset=["fecha"])
-        # Los Training Report acumulados pueden repetir jugadores de sesiones anteriores.
-        df = df.sort_values(["fecha", "source_file"]).drop_duplicates(
-            subset=["fecha", "jugador"], keep="first"
-        )
-        df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
-    return df.sort_values("fecha").reset_index(drop=True)
+        df[col] = pd.to_numeric(df[col], errors="coerce") if col in df else float("nan")
+    dates = df["fecha"].astype("string").str.strip()
+    iso_dates = dates.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+    parsed = pd.to_datetime(dates.where(iso_dates), format="ISO8601", errors="coerce")
+    other_dates = pd.to_datetime(dates.where(~iso_dates), format="mixed", dayfirst=True, errors="coerce")
+    df["fecha"] = parsed.fillna(other_dates).dt.normalize()
+    df = df.dropna(subset=["fecha", "jugador"])
+    df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
+    return df
 
 
-def _load_gps_from_drive() -> pd.DataFrame:
+def _load_gps_from_drive() -> tuple[pd.DataFrame, list[str]]:
     if not GOOGLE_SEASON_FOLDER_ID:
         raise ValueError("Falta configurar GOOGLE_SEASON_FOLDER_ID en Streamlit Secrets.")
 
-    frames = []
+    frames, issues = [], []
     gps_folder_id = _get_season_subfolder_id(GOOGLE_SEASON_FOLDER_ID, "GPS")
     for drive_file in _list_drive_gps_files(gps_folder_id):
         content = _read_drive_revision(drive_file["id"], drive_file.get("modifiedTime"))
         frame = _workbook_to_dataframe(io.BytesIO(content))
-        if not frame.empty:
-            frame["source_file"] = drive_file["name"]
-            frames.append(frame)
+        name = drive_file["name"]
+        missing = {"Date", "Player Name"} - set(frame.columns)
+        if missing:
+            columns = " y ".join(sorted(missing))
+            issues.append(f"{name} · falta {columns}. Exporta el informe desde Titan con esas columnas.")
+            continue
+        frame = _normalize_gps_dataframe(frame)
+        if frame.empty:
+            issues.append(f"{name} · no hay registros con jugador y fecha válidos.")
+            continue
+        frame["source_file"] = name
+        frames.append(frame)
 
     if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(), issues
+    # Los informes acumulados pueden repetir jugadores de sesiones anteriores.
+    df = pd.concat(frames, ignore_index=True).sort_values(["fecha", "source_file"])
+    return df.drop_duplicates(subset=["fecha", "jugador"], keep="first").reset_index(drop=True), issues
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def load_gps() -> pd.DataFrame:
-    """Carga exclusivamente los Training Report disponibles en Google Drive."""
-    return _normalize_gps_dataframe(_load_gps_from_drive())
+def load_gps() -> tuple[pd.DataFrame, list[str]]:
+    """Carga los informes GPS de Drive y devuelve los avisos de importación."""
+    return _load_gps_from_drive()
 
 
 # ── Página: Física (GPS) ──────────────────────────────────────────────────────
@@ -4466,10 +4472,11 @@ def _evo_chart(df_evo, metrica_col, metrica_label, titulo, render=True):
         textposition="outside", textfont=dict(color=BLANCO, size=11),
     ))
     media = df_evo[metrica_col].mean()
-    fig.add_hline(y=media, line_dash="dash", line_color=DORADO, line_width=2,
-                  annotation_text=f"  Media: {_fmt(media, metrica_col)}",
-                  annotation_font_color=DORADO, annotation_font_size=13,
-                  annotation_position="top left")
+    if pd.notna(media):
+        fig.add_hline(y=media, line_dash="dash", line_color=DORADO, line_width=2,
+                      annotation_text=f"  Media: {_fmt(media, metrica_col)}",
+                      annotation_font_color=DORADO, annotation_font_size=13,
+                      annotation_position="top left")
     t(fig, height=360)
     fig.update_layout(title=dict(text=titulo, font=dict(color=GRIS_MEDIO, size=13)))
     if render:
@@ -5090,12 +5097,15 @@ def page_fisica():
                 kicker="Datos GPS · Titan")
 
     try:
-        df = load_gps()
+        df, issues = load_gps()
     except DRIVE_READ_ERRORS:
         st.error("No se pudieron cargar los datos GPS de Drive. Prueba con «Actualizar datos de Drive».")
         return
+    for issue in issues:
+        st.warning(issue)
     if df.empty:
-        st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
+        if not issues:
+            st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
         return
 
     jugadores  = sorted(df["jugador"].dropna().unique())
