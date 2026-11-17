@@ -4411,9 +4411,23 @@ def _load_gps_from_drive() -> tuple[pd.DataFrame, list[str]]:
 
     if not frames:
         return pd.DataFrame(), issues
-    # Los informes acumulados pueden repetir jugadores de sesiones anteriores.
-    df = pd.concat(frames, ignore_index=True).sort_values(["fecha", "source_file"])
-    return df.drop_duplicates(subset=["fecha", "jugador"], keep="first").reset_index(drop=True), issues
+    return _deduplicate_gps_players(pd.concat(frames, ignore_index=True)), issues
+
+
+def _deduplicate_gps_players(df: pd.DataFrame) -> pd.DataFrame:
+    names = df["jugador"].astype("string").str.split().str.join(" ")
+    names = names.mask(names.eq(""))
+    # Titan ha usado ambos apellidos por separado para Bruno Alexis Decoud Servian.
+    player_key = (names.str.casefold().str.normalize("NFD").str.replace(r"[\u0300-\u036f]", "", regex=True)
+                  .replace({"bruno servian": "bruno decoud", "bruno alexis decoud servian": "bruno decoud"}))
+    display_names = (pd.DataFrame({"clave": player_key, "nombre": names})
+                     .drop_duplicates("clave").set_index("clave")["nombre"])
+    display_names.loc["bruno decoud"] = "Bruno Decoud"
+    candidates = df.assign(clave_jugador=player_key, jugador=player_key.map(display_names)).dropna(subset=["jugador"])
+    # Conserva una medición completa, con prioridad a la mayor distancia y desempate por archivo.
+    candidates = candidates.sort_values(["distancia", "source_file"], ascending=[False, True], kind="stable")
+    return (candidates.drop_duplicates(["fecha", "clave_jugador"]).drop(columns="clave_jugador")
+            .sort_values("fecha", kind="stable").reset_index(drop=True))
 
 
 @st.cache_data(ttl=60, show_spinner=False)
