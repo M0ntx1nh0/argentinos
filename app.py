@@ -5092,8 +5092,64 @@ def _build_gps_report_pdf(df, df_sesion, fecha_label: str, metrica_col: str, met
     return bytes(pdf.output())
 
 
+def _render_gps_matches(df: pd.DataFrame):
+    section("Carga física por partido",
+            "Sesiones de Titan que coinciden con la fecha de un partido de liga disputado.")
+    try:
+        calendar, _ = _read_rffm_table(rffm.load_calendar, rffm.CALENDAR_FILE)
+    except (OSError, ValueError):
+        st.info("Hace falta el calendario oficial para cruzar las fechas de Titan con los partidos.")
+        return
+
+    played = calendar.loc[calendar["Resultado"].ne(""), ["Jornada", "Fecha", "Rival", "Condición"]].copy()
+    played["fecha"] = pd.to_datetime(played["Fecha"], format="%Y-%m-%d", errors="coerce")
+    # Una fecha con dos partidos no permite elegir el encuentro a partir del GPS.
+    fixtures = played.dropna(subset=["fecha"]).drop_duplicates(subset=["fecha"], keep=False)
+    gps = df.merge(fixtures, on="fecha", validate="many_to_one") if not df.empty else df
+    if gps.empty:
+        st.info("Todavía no hay registros GPS con una fecha que coincida con un partido de liga disputado.")
+        return
+
+    metrics = {
+        "Distancia total (km)": ("distancia", "sum"),
+        "Carga GPS total": ("carga", "sum"),
+        "Velocidad máxima (km/h)": ("vel_max", "max"),
+        "Aceleración máxima (m/s²)": ("accel_max", "max"),
+        "Distancia HSR total (km)": ("hsr_dist", "sum"),
+        "Entradas HSR totales": ("hsr_count", "sum"),
+    }
+    available = [label for label, (column, _) in metrics.items() if gps[column].notna().any()]
+    if not available:
+        st.info("Los registros GPS de los partidos no contienen valores para las métricas de esta vista.")
+        return
+    label = st.selectbox("Métrica de partido", available, key="gps_match_metric")
+    column, operation = metrics[label]
+    measured = gps.dropna(subset=[column])
+    summary = (measured.groupby(["fecha", "Jornada", "Rival", "Condición"])
+               .agg(valor=(column, operation), jugadores=("jugador", "nunique"))
+               .reset_index().sort_values("fecha"))
+
+    rounds = summary["Jornada"].map(lambda j: f"J{j}")
+    dates = summary["fecha"].dt.strftime("%d/%m/%Y")
+    fig = go.Figure(go.Bar(
+        x=rounds, y=summary["valor"],
+        text=[_fmt(value, column) for value in summary["valor"]],
+        textposition="outside", cliponaxis=False, marker_color=AZUL_CELESTE,
+        customdata=list(zip(summary["Rival"], summary["Condición"], dates, summary["jugadores"])),
+        hovertemplate=("<b>%{x} · %{customdata[0]}</b><br>%{customdata[2]} · %{customdata[1]}"
+                       f"<br>{label}: %{{y:.2f}}<br>Jugadores con dato: %{{customdata[3]}}<extra></extra>"),
+    ))
+    t(fig, height=360)
+    fig.update_xaxes(type="category", tickvals=rounds,
+                     ticktext=[f"{round_label}<br>{date}" for round_label, date in zip(rounds, dates)])
+    fig.update_yaxes(title=label, rangemode="tozero")
+    chart(fig)
+    st.caption(f"{len(summary)} de {len(played)} partidos disputados con esta métrica. "
+               "Pasa el cursor por una barra para ver el rival y cuántos jugadores aportaron al cálculo.")
+
+
 def page_fisica():
-    page_header("Preparación Física", "Carga de entrenamiento por sesión y jugador",
+    page_header("Preparación Física", "Carga física por sesión, partido y jugador",
                 kicker="Datos GPS · Titan")
 
     try:
@@ -5103,11 +5159,20 @@ def page_fisica():
         return
     for issue in issues:
         st.warning(issue)
-    if df.empty:
-        if not issues:
-            st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
-        return
+    sessions_tab, matches_tab = st.tabs(["Sesiones", "Partidos"], key="gps_view", on_change="rerun")
+    if matches_tab.open:
+        with matches_tab:
+            _render_gps_matches(df)
+    elif sessions_tab.open:
+        with sessions_tab:
+            if df.empty:
+                if not issues:
+                    st.info("No hay archivos GPS disponibles en la carpeta GPS de Google Drive.")
+            else:
+                _render_gps_sessions(df)
 
+
+def _render_gps_sessions(df: pd.DataFrame):
     jugadores  = sorted(df["jugador"].dropna().unique())
     fechas_str = sorted(df["fecha_str"].unique())
 
