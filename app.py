@@ -1324,25 +1324,32 @@ def match_insights(pdata: pd.DataFrame, row: pd.Series, m: pd.DataFrame, ev: pd.
     partes = pdata[pdata["nivel"] == "parte"].set_index("tramo_raw")
     if {"1º mitad", "2º mitad"} <= set(partes.index):
         p1, p2 = partes.loc["1º mitad"], partes.loc["2º mitad"]
-        t1, t2 = p1.get("tiros") or 0, p2.get("tiros") or 0
-        better = "2ª" if t2 > t1 else "1ª"
-        items.append(("info", f"Mejor {better} parte en ataque",
-                      f"Tiros {t1:.0f} → {t2:.0f}, a puerta {p1.get('tiros_puerta') or 0:.0f} → "
-                      f"{p2.get('tiros_puerta') or 0:.0f}, pase {p1.get('pct_pases') or 0:.0f}% → "
-                      f"{p2.get('pct_pases') or 0:.0f}%."))
+        t1, t2 = p1.get("tiros"), p2.get("tiros")
+        if pd.notna(t1) and pd.notna(t2):
+            better = "2ª" if t2 > t1 else "1ª"
+            details = [f"Tiros {t1:.0f} → {t2:.0f}"]
+            for column, label, suffix in [("tiros_puerta", "a puerta", ""), ("pct_pases", "pase", "%")]:
+                if pd.notna(p1.get(column)) and pd.notna(p2.get(column)):
+                    details.append(f"{label} {p1[column]:.0f}{suffix} → {p2[column]:.0f}{suffix}")
+            items.append(("info", f"Mejor {better} parte en ataque", ", ".join(details) + "."))
 
     # Frente a la media de temporada
     if len(m) > 1:
         d_pas = row["pct_pases"] - m["pct_pases"].mean()
-        d_sot = (row["tiros_puerta"] or 0) - m["tiros_puerta"].fillna(0).mean()
+        d_sot = row["tiros_puerta"] - m["tiros_puerta"].mean()
         tone = "pos" if d_pas >= 0 and d_sot >= 0 else ("neg" if d_pas < 0 and d_sot < 0 else "info")
-        items.append((tone, "Frente a nuestra media",
-                      f"Precisión de pase <b>{d_pas:+.0f} pts</b> y tiros a puerta <b>{d_sot:+.1f}</b> respecto a "
-                      f"la media de temporada."))
-        sot = int(row["tiros_puerta"] or 0)
-        if sot >= 3 and row["gf"] == 0:
+        differences = []
+        if pd.notna(d_pas):
+            differences.append(f"Precisión de pase <b>{d_pas:+.0f} pts</b>")
+        if pd.notna(d_sot):
+            differences.append(f"Tiros a puerta <b>{d_sot:+.1f}</b>")
+        if differences:
+            items.append((tone, "Frente a nuestra media",
+                          " · ".join(differences) + " respecto a la media de temporada."))
+        sot = row["tiros_puerta"]
+        if pd.notna(sot) and sot >= 3 and row["gf"] == 0:
             items.append(("neg", "Sin premio de cara a puerta",
-                          f"{sot} tiros a puerta y ningún gol: el resultado no refleja la producción ofensiva."))
+                          f"{sot:.0f} tiros a puerta y ningún gol: el resultado no refleja la producción ofensiva."))
 
     # Vídeo: cómo nos atacó el rival
     if not ev.empty:
@@ -2424,7 +2431,7 @@ def _tactical_heatmap(events: pd.DataFrame, title: str, color: str = AZUL_CELEST
     return fig
 
 
-RFFM_RIVAL_ALIASES = {"uda": "10657147", "cue": "8961590", "udue": "8961590"}
+RFFM_RIVAL_ALIASES = {"uda": "10657147", "cue": "8961590", "udue": "8961590", "usa": "15287089"}
 RFFM_NON_LEAGUE_RIVALS = {
     "adnuevacastilla": ("A.D. Nueva Castilla", "3359528"),
     "anc": ("A.D. Nueva Castilla", "3359528"),
@@ -3581,7 +3588,7 @@ def _calendar_sources(calendar: pd.DataFrame, reports: pd.DataFrame) -> tuple[di
             candidates = calendar[calendar["Fecha"].eq(date.date().isoformat())]
         else:
             if key in RFFM_RIVAL_ALIASES:
-                candidates = played[played["ID rival RFFM"].eq(RFFM_RIVAL_ALIASES[key])]
+                candidates = calendar[calendar["ID rival RFFM"].eq(RFFM_RIVAL_ALIASES[key])]
             else:
                 def matches_name(name):
                     short = re.sub(r"^(?:[A-Z]\.){2,3}\s*|\bSAD\s+", "", name)
