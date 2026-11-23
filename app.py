@@ -3624,13 +3624,22 @@ def _with_match_display(reports: pd.DataFrame, calendar: pd.DataFrame,
                  RFFM_NON_LEAGUE_RIVALS.get(_tactical_rival_key(rival), (rival, ""))
                  for match, rival in zip(linked, reports["rival"])]
     names, crests = zip(*opponents)
-    return reports.assign(
+    enriched = reports.assign(
         jornada_rffm=official_round, rival_nombre=names,
         rival_escudo=crests,
         condicion_rffm=pd.Series(official_round, index=reports.index).map(calendar.set_index("Jornada")["Condición"]),
         fecha_rffm=pd.to_datetime([match[3] if isinstance(match, tuple) else None for match in linked]),
         etiqueta_partido=[f"J{j} · {name}" if pd.notna(j) else name for j, name in zip(official_round, names)],
     )
+    if "nivel" in enriched:
+        # Cada jornada oficial representa un partido. Una nueva exportación HUDL
+        # sustituye a la anterior, conservando juntos todos sus tramos y mitades.
+        candidates = enriched.loc[enriched["jornada_rffm"].notna()].drop_duplicates("archivo")
+        uploaded = "fecha_carga" if "fecha_carga" in candidates else "fecha_ref"
+        selected = (candidates.sort_values([uploaded, "archivo"], kind="stable", na_position="first")
+                    .drop_duplicates("jornada_rffm", keep="last")["archivo"])
+        enriched = enriched[enriched["jornada_rffm"].isna() | enriched["archivo"].isin(selected)]
+    return enriched
 
 
 def _season_drive_reports() -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
@@ -4119,10 +4128,12 @@ def page_temporada():
                 if reports is not None:
                     source_matches[source], files = _calendar_sources(calendar, reports)
                     unmatched.extend(f"{source} · {file}" for file in files)
+            if hudl is not None:
+                hudl = _with_match_display(hudl, calendar, source_matches["HUDL"])
+                hudl_matches = hudl[hudl["nivel"].eq("temporada")] if not hudl.empty else hudl
+                source_matches["HUDL"], _ = _calendar_sources(calendar, hudl_matches)
             if general_tab.open:
                 _render_season_calendar(calendar, results, hudl_matches, video, source_matches)
-            if performance_tab.open and hudl is not None:
-                hudl = _with_match_display(hudl, calendar, source_matches["HUDL"])
             if performance_tab.open and video is not None:
                 video = _with_match_display(video, calendar, source_matches["LongoMatch"])
             if general_tab.open and unmatched:

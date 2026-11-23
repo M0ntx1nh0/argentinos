@@ -195,6 +195,7 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
         )
         record    = {"partido": f"CAdF vs {rival}", "rival": rival, "archivo": filename,
                      "condicion": condicion, "fecha_ref": _match_date(filename, created),
+                     "fecha_carga": pd.to_datetime(created, utc=True, errors="coerce"),
                      "competicion": competition,
                      "nivel": nivel, "tramo_raw": tramo_raw}
         for col_hudl, col_interno in COL_MAP.items():
