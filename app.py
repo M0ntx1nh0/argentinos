@@ -4504,6 +4504,8 @@ def _kpis_equipo(df_sesion):
             )
 
 def _evo_chart(df_evo, metrica_col, metrica_label, titulo, render=True):
+    if "fecha" in df_evo.columns:
+        df_evo = df_evo.sort_values("fecha")
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_evo["fecha_str"], y=df_evo[metrica_col],
@@ -5215,7 +5217,8 @@ def page_fisica():
 
 def _render_gps_sessions(df: pd.DataFrame):
     jugadores  = sorted(df["jugador"].dropna().unique())
-    fechas_str = sorted(df["fecha_str"].unique())
+    # Ordenar por fecha real: como texto "01/11" quedaría antes que "22/10".
+    fechas_str = df.sort_values("fecha", ascending=False)["fecha_str"].drop_duplicates().tolist()
 
     # ── Filtros globales ──────────────────────────────────────────────────────
     col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
@@ -5365,6 +5368,12 @@ def _render_gps_sessions(df: pd.DataFrame):
                         textfont=dict(color=color, size=10),
                     ))
                 t(fig_cm, height=380)
+                # Eje de categorías en orden de fecha; si no, Plotly las ordena por aparición
+                # y las líneas saltan hacia atrás (04/11 después de 22/11).
+                orden_sesiones = (df_comp_multi.sort_values("fecha")["fecha_str"]
+                                  .drop_duplicates().tolist())
+                fig_cm.update_xaxes(type="category", categoryorder="array",
+                                    categoryarray=orden_sesiones)
                 fig_cm.update_layout(title=dict(
                     text=f"Evolución por sesión · {metrica_comp_label}",
                     font=dict(color=GRIS_MEDIO, size=13)))
