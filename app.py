@@ -1402,6 +1402,9 @@ def page_partido(df: pd.DataFrame, video_df: pd.DataFrame):
     )
     if competition == "Copa RFFM":
         st.caption("Marcador del informe HUDL. Puede incluir los lanzamientos de la tanda de penaltis.")
+    match_notes = st.session_state.get("score_notes", {}).get(selected)
+    if match_notes:
+        score_notes_box({selected: match_notes})
 
     cols = st.columns(5)
     for col, html in zip(cols, [
@@ -3738,6 +3741,80 @@ def _federation_results(calendar: pd.DataFrame) -> pd.DataFrame:
     }, index=played.index)
 
 
+VIDEO_TRAMOS = (("0-15", "16-30", "31-45", "45+"), ("46-60", "61-75", "76-90", "90+"))
+
+
+def _video_goal_tramos(events: pd.DataFrame, team: str) -> pd.Series | None:
+    """Tramo HUDL de cada gol de LongoMatch, solo con las marcas INICIO 1T e INICIO 2T."""
+    markers = events[events["fase"].eq("inicio_parte")]
+    starts = [markers.loc[markers["nombre"].str.contains(half, case=False, na=False), "time_seconds"].min()
+              for half in ("1T", "2T")]
+    if any(pd.isna(start) for start in starts):
+        return None
+    goals = events.loc[events["fase"].eq("gol") & events["equipo"].eq(team), "time_seconds"]
+    if goals.lt(starts[0]).any():
+        return None
+    half = goals.ge(starts[1]).astype(int)
+    minutes = (goals - pd.Series([starts[h] for h in half], index=goals.index)) / 60
+    blocks = minutes.floordiv(15).clip(upper=3).astype(int)
+    return pd.Series([VIDEO_TRAMOS[h][b] for h, b in zip(half, blocks)], index=goals.index).value_counts()
+
+
+def reconcile_official_scores(df: pd.DataFrame, video_df: pd.DataFrame,
+                              calendar: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """El marcador oficial es el de la RFFM. Si HUDL no tiene todos los goles etiquetados,
+    se corrige el total y, cuando LongoMatch tiene esos goles con las marcas de inicio de
+    cada parte, también su reparto por tramos y mitades."""
+    if df.empty or "jornada_rffm" not in df:
+        return df, {}
+    results = _federation_results(calendar).join(calendar["Jornada"]).set_index("Jornada")
+    df, notes = df.copy(), {}
+    for idx, row in df[df["nivel"].eq("temporada") & df["jornada_rffm"].notna()].iterrows():
+        jornada = int(row["jornada_rffm"])
+        if jornada not in results.index:
+            continue
+        official = results.loc[jornada]
+        hudl = {"goles": int(pd.Series([row["goles"]]).fillna(0).iloc[0]),
+                "goles_enc": int(pd.Series([row["goles_enc"]]).fillna(0).iloc[0])}
+        wanted = {"goles": int(official["gf"]), "goles_enc": int(official["gc"])}
+        if hudl == wanted:
+            continue
+        match_notes = [f"HUDL marca {hudl['goles']}–{hudl['goles_enc']} y el acta de la RFFM "
+                       f"{wanted['goles']}–{wanted['goles_enc']}: se usa el resultado oficial."]
+        df.loc[idx, ["goles", "goles_enc"]] = [wanted["goles"], wanted["goles_enc"]]
+        file_rows = df["archivo"].eq(row["archivo"])
+        events = (video_df[video_df["jornada_rffm"].eq(jornada)]
+                  if not video_df.empty and "jornada_rffm" in video_df else pd.DataFrame())
+        for column, team, label in (("goles", "propio", "a favor"), ("goles_enc", "rival", "en contra")):
+            if hudl[column] == wanted[column]:
+                continue
+            counts = _video_goal_tramos(events, team) if not events.empty else None
+            if counts is None or int(counts.sum()) != wanted[column]:
+                match_notes.append(f"Goles {label}: faltan sus tramos en HUDL y el vídeo no permite completarlos.")
+                continue
+            tramo_rows = file_rows & df["nivel"].eq("tramo")
+            df.loc[tramo_rows, column] = df.loc[tramo_rows, "tramo_raw"].map(counts).fillna(0)
+            for half, raws in zip(("1º mitad", "2º mitad"), VIDEO_TRAMOS):
+                df.loc[file_rows & df["nivel"].eq("parte") & df["tramo_raw"].eq(half), column] = (
+                    int(counts.reindex(list(raws)).fillna(0).sum()))
+            match_notes.append(f"Goles {label}: tramos tomados del vídeo de LongoMatch.")
+        notes[row["archivo"]] = match_notes
+    return df, notes
+
+
+def score_notes_box(notes: dict[str, list[str]], labels: dict[str, str] | None = None):
+    """Avisa de los partidos cuyo marcador se ha corregido con el acta oficial."""
+    if not notes:
+        return
+    body = "<br>".join(
+        (f"<b>{escape(labels.get(file, file))}:</b> " if labels is not None else "") + " ".join(map(escape, lines))
+        for file, lines in notes.items()
+    )
+    st.markdown(f'<div class="cadf-insight" style="--tone:{DORADO}">'
+                f'<div class="cadf-insight-title">Marcador corregido con el acta de la RFFM</div>'
+                f'<div class="cadf-insight-body">{body}</div></div>', unsafe_allow_html=True)
+
+
 def _report_chip(source: str, files: list[str], checked: bool, played: bool) -> str:
     if files:
         tone, status = "ok", "Disponible"
@@ -4111,7 +4188,7 @@ def page_temporada():
 
         source_matches = {"HUDL": {}, "LongoMatch": {}}
         results = pd.DataFrame()
-        group_calendar = None
+        calendar = group_calendar = None
         try:
             (calendar, group_calendar), calendar_in_drive = _read_rffm_table(
                 rffm.load_competition_calendar, rffm.CALENDAR_FILE)
@@ -4163,6 +4240,10 @@ def page_temporada():
                 if "jornada_rffm" in hudl and hudl["jornada_rffm"].notna().all():
                     hudl = hudl.assign(orden=hudl["jornada_rffm"].astype(int))
                 video_aligned, _, _ = align_video_rivals(hudl, video if video is not None else pd.DataFrame())
+                if calendar is not None:
+                    hudl, corrections = reconcile_official_scores(hudl, video_aligned, calendar)
+                    score_notes_box(corrections, dict(zip(hudl["archivo"], hudl["etiqueta_partido"]))
+                                    if "etiqueta_partido" in hudl else {})
                 _render_season_summary(hudl, video_aligned, results)
                 _render_season_performance(hudl, video_aligned)
 
@@ -5997,6 +6078,7 @@ def main():
         st.error("No se encontraron informes de partido en Drive.")
         return
 
+    calendar = None
     try:
         calendar, _ = _read_rffm_table(rffm.load_calendar, rffm.CALENDAR_FILE)
     except (OSError, ValueError):
@@ -6012,6 +6094,8 @@ def main():
         video_df = _with_match_display(video_df, calendar, video_sources)
     if not df.empty:
         video_df, video_unmatched, video_missing = align_video_rivals(df, video_df)
+        if calendar is not None:
+            df, st.session_state["score_notes"] = reconcile_official_scores(df, video_df, calendar)
         names = df.drop_duplicates("rival").set_index("rival").get("rival_nombre", {})
         st.session_state["video_status"] = (video_unmatched, [names.get(rival, rival) for rival in video_missing])
     temporada = rffm.SEASON if df.empty else season_label(df)
