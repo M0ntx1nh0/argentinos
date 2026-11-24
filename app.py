@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import zlib
 from datetime import datetime
 from hashlib import md5
 from html import escape
@@ -790,15 +791,15 @@ def _halves_chart(first, second, names=("1ª parte", "2ª parte")) -> go.Figure:
                         subplot_titles=("Control con balón (%)", "Producción ofensiva"))
     vol_max = 1
     for name, data, color in [(names[0], first, AZUL_CELESTE), (names[1], second, DORADO)]:
-        pct = [float(data.get(c) or 0) for _, c in pct_metrics]
-        vol = [float(data.get(c) or 0) for _, c in vol_metrics]
-        vol_max = max(vol_max, *vol)
+        pct = [data.get(c) for _, c in pct_metrics]
+        vol = [data.get(c) for _, c in vol_metrics]
+        vol_max = max([vol_max, *[v for v in vol if pd.notna(v)]])
         fig.add_trace(go.Bar(name=name, x=[l for l, _ in pct_metrics], y=pct, marker_color=color,
-                             legendgroup=name, text=[f"{v:.0f}%" for v in pct], textposition="outside",
+                             legendgroup=name, text=[f"{v:.0f}%" if pd.notna(v) else "" for v in pct], textposition="outside",
                              textfont=dict(color=BLANCO, size=12)), row=1, col=1)
         fig.add_trace(go.Bar(name=name, x=[l for l, _ in vol_metrics], y=vol, marker_color=color,
                              legendgroup=name, showlegend=False,
-                             text=[f"{v:.1f}".rstrip("0").rstrip(".") for v in vol], textposition="outside",
+                             text=[f"{v:.1f}".rstrip("0").rstrip(".") if pd.notna(v) else "" for v in vol], textposition="outside",
                              textfont=dict(color=BLANCO, size=12)), row=1, col=2)
     t(fig, height=320, barmode="group", bargap=0.3, margin=dict(t=56, b=30, l=40, r=20))
     fig.update_yaxes(range=[0, 112], ticksuffix="%", row=1, col=1)
@@ -1543,8 +1544,9 @@ def page_partido(df: pd.DataFrame, video_df: pd.DataFrame):
 
     # ── Comparativa 1ª vs 2ª mitad ──
     section("Primera y segunda parte", "¿Qué cambió tras el descanso? Porcentajes y volúmenes por separado.")
-    p1 = partes[partes["tramo_raw"] == "1º mitad"].iloc[0] if len(partes) >= 1 else {}
-    p2 = partes[partes["tramo_raw"] == "2º mitad"].iloc[0] if len(partes) >= 2 else {}
+    halves = partes.drop_duplicates("tramo_raw").set_index("tramo_raw")
+    p1 = halves.loc["1º mitad"] if "1º mitad" in halves.index else {}
+    p2 = halves.loc["2º mitad"] if "2º mitad" in halves.index else {}
     chart(_halves_chart(p1, p2))
 
     # ── Campograma de pases por tercio ──
@@ -1741,7 +1743,10 @@ def page_partido(df: pd.DataFrame, video_df: pd.DataFrame):
 
     # ── Defensa y balón parado ──
     section("Defensa y balón parado",
-            "Qué nos exigió el rival y cuándo; faltas cometidas por tramo.")
+            "Paradas, bloqueos y acciones a balón parado por tramo.")
+    free_kicks = pd.notna(temp_row.get("tiros_libres"))
+    foul_key = "tiros_libres" if free_kicks else "faltas"
+    foul_label = "Tiros libres ejecutados" if free_kicks else "Faltas cometidas"
     d_cols = st.columns(5)
     pa0 = temp_row.get("pa0")
     for col, html in zip(d_cols, [
@@ -1752,8 +1757,8 @@ def page_partido(df: pd.DataFrame, video_df: pd.DataFrame):
                     accent=AZUL_CELESTE),
         metric_card("Disparos bloqueados", _stat_text(temp_row.get("tap")), "",
                     delta=vs_ref(temp_row.get("tap"), m["tap"].mean(), 1), accent=DORADO),
-        metric_card("Faltas cometidas", _stat_text(temp_row.get("faltas")), "",
-                    delta=vs_ref(temp_row.get("faltas"), m["faltas"].mean(), 1, higher_better=False),
+        metric_card(foul_label, _stat_text(temp_row.get(foul_key)), "",
+                    delta=None if free_kicks else vs_ref(temp_row.get("faltas"), m["faltas"].mean(), 1, higher_better=False),
                     accent=ROJO),
         metric_card("Córners / centros", _stat_text(temp_row.get("jugadas_set")),
                     f" / {_stat_text(temp_row.get('centros'))}",
@@ -1764,12 +1769,12 @@ def page_partido(df: pd.DataFrame, video_df: pd.DataFrame):
     tr_labels = tramos["tramo_raw"].tolist()
     par_vals = tramos["paradas"].fillna(0).tolist()
     tap_vals = tramos["tap"].fillna(0).tolist()
-    faltas_tramo = tramos["faltas"].fillna(0).tolist()
+    faltas_tramo = tramos[foul_key].fillna(0).tolist()
     c1, c2 = st.columns(2)
     for column, title, series in [
         (c1, "Paradas y bloqueos por tramo",
          [("Paradas portero", par_vals, AZUL_CELESTE), ("Disparos bloqueados", tap_vals, DORADO)]),
-        (c2, "Faltas cometidas por tramo", [("Faltas", faltas_tramo, ROJO)]),
+        (c2, f"{foul_label} por tramo", [(foul_label, faltas_tramo, ROJO)]),
     ]:
         if not any(v > 0 for _, values, _ in series for v in values):
             continue
@@ -4451,8 +4456,23 @@ def _workbook_to_dataframe(workbook_like) -> pd.DataFrame:
         if "_synced_data" not in wb.sheetnames:
             return pd.DataFrame()
         rows = wb["_synced_data"].values
-        headers = [str(h).strip() if h else "" for h in next(rows, ())]
-        return pd.DataFrame(dict(zip(headers, row)) for row in rows)
+        headers = [" ".join(str(h).split()) if h else "" for h in next(rows, ())]
+        frame = pd.DataFrame(rows, columns=headers)
+        if "_ib" in wb.sheetnames:
+            metadata = wb["_ib"]["A1"].value
+            if isinstance(metadata, str):
+                try:
+                    configs = json.loads(zlib.decompress(base64.b64decode(metadata)))["pvtcfgs"]
+                    units = {}
+                    for config in configs:
+                        for item in config["cols"]:
+                            name = " ".join(item.get("name", "").split())
+                            units.setdefault(name, []).append(item.get("unit") or "")
+                    frame.attrs["titan_units"] = [units[h].pop(0) if units.get(h) else "" for h in headers]
+                except (ValueError, KeyError, TypeError, AttributeError, zlib.error):
+                    # Los libros editados a mano pueden carecer de metadatos de Titan.
+                    pass
+        return frame
     finally:
         wb.close()
 
@@ -4461,38 +4481,48 @@ def _normalize_gps_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = df.rename(columns={
-        "Date": "fecha",
-        "Player Name": "jugador",
-        "Distance": "distancia",
-        "GPS Load": "carga",
-        "Top Speed": "vel_max",
-        "Peak Accel": "accel_max",
-        "Accel Zones  Count": "accel_count",
-        "Speed Zones  Distance": "hsr_dist",
-        "Speed Zones  Count": "hsr_count",
+    unit_factors = {"mi": 1.609344, "mi/hr": 1.609344, "mph": 1.609344,
+                    "yrd": 0.0009144, "yd": 0.0009144, "m": 0.001}
+    headers = [" ".join(str(col).split()).casefold() for col in df.columns]
+    units = df.attrs.get("titan_units", [""] * len(headers))
+
+    def metric(*names, require_unit=False):
+        values = pd.Series(float("nan"), index=df.index)
+        for name in names:
+            for col, header in enumerate(headers):
+                if header != name.casefold():
+                    continue
+                unit = units[col].strip().casefold()
+                if require_unit and unit not in {"km", *unit_factors}:
+                    continue
+                numeric = pd.to_numeric(df.iloc[:, col], errors="coerce")
+                values = values.combine_first(numeric * unit_factors.get(unit, 1))
+        return values
+
+    normalized = pd.DataFrame({
+        "jugador": df["Player Name"],
+        "distancia": metric("Distance", "GPS Distance"),
+        "carga": metric("GPS Load", "GPS Player Load"),
+        "vel_max": metric("Top Speed", "GPS Top Speed"),
+        "accel_max": metric("Peak Accel", "GPS Peak Accel"),
+        "accel_count": metric("Accel Zones Count", "GPS Accel Zones Count"),
+        "hsr_dist": metric("Speed Zones Distance", "GPS Speed Zones Distance"),
+        "hsr_count": metric("Speed Zones Count", "GPS Speed Zones Count"),
     })
-
-    # Titan usa estos encabezados en las exportaciones recientes.
-    for source, target in {
-        "GPS Distance": "distancia",
-        "GPS Player Load": "carga",
-        "GPS Top Speed": "vel_max",
-        "GPS Peak Accel": "accel_max",
-    }.items():
-        if source in df.columns and target not in df.columns:
-            df = df.rename(columns={source: target})
-
-    for col in ["distancia", "carga", "vel_max", "accel_max", "accel_count", "hsr_dist", "hsr_count"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce") if col in df else float("nan")
-    dates = df["fecha"].astype("string").str.strip()
+    # La plantilla del club agrega desde la zona de velocidad 7 y la banda de
+    # aceleración 4–5. Las exportaciones nuevas separan las bandas.
+    hsr_zones = [metric(f"GPS Speed Zone {zone} Distance", require_unit=True) for zone in range(7, 11)]
+    accel_zones = [metric(f"GPS Accel Zones Count {band}m/s-{band + 1}m/s") for band in range(4, 8)]
+    for key, zones in (("hsr_dist", hsr_zones), ("accel_count", accel_zones)):
+        normalized[key] = normalized[key].fillna(pd.concat(zones, axis=1).sum(axis=1, min_count=len(zones)))
+    dates = df["Date"].astype("string").str.strip()
     iso_dates = dates.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
     parsed = pd.to_datetime(dates.where(iso_dates), format="ISO8601", errors="coerce")
     other_dates = pd.to_datetime(dates.where(~iso_dates), format="mixed", dayfirst=True, errors="coerce")
-    df["fecha"] = parsed.fillna(other_dates).dt.normalize()
-    df = df.dropna(subset=["fecha", "jugador"])
-    df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
-    return df
+    normalized["fecha"] = parsed.fillna(other_dates).dt.normalize()
+    normalized = normalized.dropna(subset=["fecha", "jugador"])
+    normalized["fecha_str"] = normalized["fecha"].dt.strftime("%d/%m/%Y")
+    return normalized
 
 
 def _load_gps_from_drive() -> tuple[pd.DataFrame, list[str]]:
@@ -4550,7 +4580,7 @@ METRICAS_INFO = {
     "vel_max":   ("Vel. Máxima (km/h)",    " km/h", "Velocidad punta máxima registrada."),
     "carga":     ("Carga GPS",             "",      "Índice de estrés físico total (distancia + intensidad + aceleraciones)."),
     "accel_max": ("Accel. Máxima (m/s²)",  " m/s²", "Pico de aceleración. Refleja explosividad del esfuerzo."),
-    "hsr_dist":  ("HSR Distancia (km)",    " km",   "Distancia recorrida en zonas de alta velocidad."),
+    "hsr_dist":  ("HSR Distancia (km)",    " km",   "Distancia en las zonas de velocidad 7 a 10 de Titan."),
     "hsr_count": ("HSR Entradas",          "",      "Número de esfuerzos en alta velocidad durante la sesión."),
 }
 METRICA_MAP = {
@@ -4565,6 +4595,8 @@ METRICA_MAP = {
 def _fmt(val, col):
     if not pd.notna(val):
         return "—"
+    if col == "hsr_dist":
+        return f"{val:.3f}"
     return f"{val:.2f}" if col in ("distancia", "accel_max") else f"{val:.1f}"
 
 def _kpis_equipo(df_sesion):
@@ -4585,6 +4617,10 @@ def _kpis_equipo(df_sesion):
             )
 
 def _evo_chart(df_evo, metrica_col, metrica_label, titulo, render=True):
+    df_evo = df_evo.dropna(subset=[metrica_col])
+    if render and df_evo.empty:
+        st.info(f"No hay mediciones de {metrica_label} para esta evolución.")
+        return go.Figure()
     if "fecha" in df_evo.columns:
         df_evo = df_evo.sort_values("fecha")
     fig = go.Figure()
@@ -4662,6 +4698,9 @@ def _session_summary_cards(df_sesion):
 
 def _load_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "carga"]).sort_values("carga", ascending=False)
+    if render and data.empty:
+        st.info("Esta sesión no tiene mediciones de Carga GPS.")
+        return go.Figure()
     colors = [ROJO if value >= 200 else DORADO if value >= 160 else AZUL_CELESTE for value in data["carga"]]
     if render:
         st.markdown(f"<div style='color:{GRIS_MEDIO};font-size:0.85rem;font-weight:700;margin-bottom:2px;'>"
@@ -4692,6 +4731,9 @@ def _load_chart(df_sesion, render=True):
 
 def _distance_intensity_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "distancia", "hsr_dist"])
+    if render and data.empty:
+        st.info("El gráfico requiere distancia total y distancia HSR para los mismos jugadores.")
+        return go.Figure()
     fig = go.Figure(go.Scatter(
         x=data["distancia"], y=data["hsr_dist"], mode="markers+text",
         marker=dict(size=15, color=AZUL_CELESTE, opacity=0.9,
@@ -4700,7 +4742,7 @@ def _distance_intensity_chart(df_sesion, render=True):
         textfont=dict(color=BLANCO, size=10),
         customdata=data[["jugador", "carga", "vel_max"]],
         hovertemplate=("<b>%{customdata[0]}</b><br>Distancia: %{x:.2f} km<br>"
-                       "HSR: %{y:.2f} km<br>GPS Load: %{customdata[1]:.1f}<br>"
+                       "HSR: %{y:.3f} km<br>GPS Load: %{customdata[1]:.1f}<br>"
                        "Vel. máxima: %{customdata[2]:.1f} km/h<extra></extra>"),
     ))
     t(fig, height=440)
@@ -4716,6 +4758,9 @@ def _distance_intensity_chart(df_sesion, render=True):
 
 def _acceleration_risk_chart(df_sesion, render=True):
     data = df_sesion.dropna(subset=["jugador", "accel_count"]).sort_values("accel_count", ascending=False)
+    if render and data.empty:
+        st.info("Esta sesión no tiene recuentos de aceleraciones de las bandas de 4 m/s² en adelante.")
+        return go.Figure()
     top_risk = set(data.head(3)["jugador"])
     colors = [ROJO if player in top_risk else AZUL_CELESTE for player in data["jugador"]]
     fig = go.Figure(go.Bar(
@@ -4742,6 +4787,9 @@ def _acceleration_risk_chart(df_sesion, render=True):
 
 def _player_comparison_chart(df_sesion, metrica_col, metrica_label, render=True):
     data = df_sesion.dropna(subset=[metrica_col]).sort_values(metrica_col, ascending=True)
+    if render and data.empty:
+        st.info(f"No hay mediciones de {metrica_label} para esta sesión.")
+        return go.Figure()
     colors = _quartile_colors(data[metrica_col])
     if render:
         _quartile_legend()
@@ -4950,6 +4998,7 @@ def _pdf_vertical_bars(
     left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, x, y, width, height, title)
     values = pd.to_numeric(data[value_col], errors="coerce").fillna(0).tolist()
     if not values:
+        _pdf_gps_no_data(pdf, left, top, plot_width)
         return
     max_value = max(values) or 1
     max_axis = max_value * 1.15
@@ -4961,7 +5010,7 @@ def _pdf_vertical_bars(
         pdf.line(left, line_y, left + plot_width, line_y)
         pdf.set_text_color(*_rgb(GRIS_MEDIO))
         pdf.set_xy(x + 2, line_y - 2)
-        pdf.cell(19, 4, f"{value:.0f}", align="R")
+        pdf.cell(19, 4, _fmt(value, value_col) if value_col == "hsr_dist" else f"{value:.0f}", align="R")
     pdf.set_draw_color(*_rgb(GRIS_MEDIO))
     pdf.line(left, top, left, top + plot_height)
     pdf.line(left, top + plot_height, left + plot_width, top + plot_height)
@@ -4978,7 +5027,7 @@ def _pdf_vertical_bars(
             pdf.set_text_color(*_rgb(BLANCO))
             pdf.set_font("Helvetica", "B", 5.5)
             pdf.set_xy(bar_x - 4, bar_y - 4)
-            pdf.cell(bar_width + 8, 3, f"{value:.1f}", align="C")
+            pdf.cell(bar_width + 8, 3, _fmt(value, value_col), align="C")
         pdf.set_text_color(*_rgb(GRIS_MEDIO))
         pdf.set_font("Helvetica", "", 5.5)
         pdf.set_xy(bar_x - 3, top + plot_height + 2)
@@ -4990,7 +5039,7 @@ def _pdf_vertical_bars(
 
 
 def _pdf_draw_evolution_chart(pdf: _GPSReportPDF, data: pd.DataFrame, value_col: str, label: str):
-    plot = data.rename(columns={"fecha_str": "jugador"})
+    plot = data.dropna(subset=[value_col]).rename(columns={"fecha_str": "jugador"})
     _pdf_vertical_bars(
         pdf, plot, value_col, 14, 86, 269, 108, f"Media del equipo - {label}", label,
         [AZUL_CELESTE] * len(plot),
@@ -5010,11 +5059,21 @@ def _pdf_draw_acceleration_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
     _pdf_vertical_bars(pdf, plot, "accel_count", 14, 48, 269, 149, "Top 3 - mayor volumen de aceleraciones", "Aceleraciones", colors)
 
 
+def _pdf_gps_no_data(pdf: _GPSReportPDF, left: float, top: float, width: float):
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(*_rgb(GRIS_MEDIO))
+    pdf.set_xy(left, top + 6)
+    pdf.cell(width, 5, "Sin mediciones para este grafico.", align="C")
+
+
 def _pdf_draw_intensity_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
     plot = data.dropna(subset=["jugador", "distancia", "hsr_dist"])
     left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, 14, 48, 269, 149, "Perfil de esfuerzo individual")
+    if plot.empty:
+        _pdf_gps_no_data(pdf, left, top, plot_width)
+        return
     max_x = max(float(plot["distancia"].max()), 1) * 1.08
-    max_y = max(float(plot["hsr_dist"].max()), 1) * 1.12
+    max_y = max(float(plot["hsr_dist"].max()), 0.001) * 1.12
     pdf.set_font("Helvetica", "", 6)
     for index in range(5):
         grid_x = left + plot_width * index / 4
@@ -5026,7 +5085,7 @@ def _pdf_draw_intensity_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
         pdf.set_xy(grid_x - 5, top + plot_height + 2)
         pdf.cell(10, 3, f"{max_x * index / 4:.1f}", align="C")
         pdf.set_xy(15, grid_y - 2)
-        pdf.cell(16, 3, f"{max_y * index / 4:.1f}", align="R")
+        pdf.cell(16, 3, _fmt(max_y * index / 4, "hsr_dist"), align="R")
     for _, row in plot.iterrows():
         point_x = left + (float(row["distancia"]) / max_x) * plot_width
         point_y = top + plot_height - (float(row["hsr_dist"]) / max_y) * plot_height
@@ -5047,6 +5106,9 @@ def _pdf_draw_intensity_chart(pdf: _GPSReportPDF, data: pd.DataFrame):
 def _pdf_draw_comparison_chart(pdf: _GPSReportPDF, data: pd.DataFrame, metric_col: str, metric_label: str):
     plot = data.dropna(subset=["jugador", metric_col]).sort_values(metric_col, ascending=False).reset_index(drop=True)
     left, top, plot_width, plot_height = _pdf_chart_canvas(pdf, 14, 48, 269, 149, f"{metric_label} por jugador")
+    if plot.empty:
+        _pdf_gps_no_data(pdf, left, top, plot_width)
+        return
     label_width = 37
     max_value = max(float(plot[metric_col].max()), 1) * 1.1
     row_height = plot_height / max(len(plot), 1)
@@ -5064,7 +5126,7 @@ def _pdf_draw_comparison_chart(pdf: _GPSReportPDF, data: pd.DataFrame, metric_co
         pdf.set_text_color(*_rgb(BLANCO))
         pdf.set_font("Helvetica", "B", 5.8)
         pdf.set_xy(left + bar_width + 1, bar_y + 1)
-        pdf.cell(12, 3, f"{value:.2f}")
+        pdf.cell(12, 3, _fmt(value, metric_col))
     pdf.set_text_color(*_rgb(GRIS_MEDIO))
     pdf.set_font("Helvetica", "", 6)
     pdf.set_xy(left, top + plot_height + 4)
@@ -5327,6 +5389,8 @@ def _render_gps_sessions(df: pd.DataFrame):
     with tab_equipo:
         section(f"Resumen del equipo · {fecha_label}")
         _kpis_equipo(df_sesion)
+        if df_sesion["hsr_count"].isna().all():
+            st.caption("Entradas HSR sin datos. Esta sesión necesita un recuento de esfuerzos en alta velocidad de Titan.")
 
         pdf_col, _ = st.columns([1, 4])
         with pdf_col:
@@ -5408,11 +5472,12 @@ def _render_gps_sessions(df: pd.DataFrame):
                 "Vista", ["Por sesión", "Media temporada"], key="gps_comp_vista"
             )
 
+        df_comp_multi = df.loc[df["jugador"].isin(jugadores_sel)].dropna(subset=[metrica_comp_col])
         if not jugadores_sel:
             st.info("Selecciona al menos un jugador.")
+        elif df_comp_multi.empty:
+            st.info(f"No hay mediciones de {metrica_comp_label} para los jugadores seleccionados.")
         else:
-            df_comp_multi = df[df["jugador"].isin(jugadores_sel)]
-
             if vista_comp == "Media temporada":
                 df_bar = (df_comp_multi.groupby("jugador")[metrica_comp_col]
                           .mean().reset_index()
@@ -5435,9 +5500,8 @@ def _render_gps_sessions(df: pd.DataFrame):
                 colores_jugadores = [AZUL_CELESTE, DORADO, VERDE, ROJO,
                                      "#A78BFA", "#F97316", "#34D399", "#FB7185"]
                 fig_cm = go.Figure()
-                for i, jug in enumerate(jugadores_sel):
-                    df_j = (df_comp_multi[df_comp_multi["jugador"] == jug]
-                            .sort_values("fecha"))
+                for i, (jug, data) in enumerate(df_comp_multi.groupby("jugador", sort=False)):
+                    df_j = data.sort_values("fecha")
                     color = colores_jugadores[i % len(colores_jugadores)]
                     fig_cm.add_trace(go.Scatter(
                         x=df_j["fecha_str"], y=df_j[metrica_comp_col],
@@ -5504,10 +5568,11 @@ def _render_gps_sessions(df: pd.DataFrame):
 
             # Tabla individual completa
             section("Historial de sesiones")
-            df_hist = df_jug[["fecha_str","distancia","vel_max","carga","accel_max"]].copy()
+            df_hist = df_jug[["fecha_str","distancia","vel_max","carga","accel_max","hsr_dist","hsr_count"]].copy()
             df_hist = df_hist.rename(columns={
                 "fecha_str":"Fecha","distancia":"Dist (km)",
-                "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx"
+                "vel_max":"Vel Máx","carga":"Carga GPS","accel_max":"Accel Máx",
+                "hsr_dist":"HSR Dist (km)","hsr_count":"HSR Entradas"
             })
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
@@ -5527,12 +5592,12 @@ def _render_gps_sessions(df: pd.DataFrame):
             ("Distance",                True,  "Distancia (km)",           "Kilómetros totales recorridos por el jugador durante la sesión."),
             ("GPS Load",                True,  "Carga GPS",                "Índice de estrés físico total calculado por Titan. Combina distancia, intensidad, aceleraciones y tiempo en alta intensidad. No tiene unidades fijas — sirve para comparar esfuerzos entre sesiones y jugadores."),
             ("Top Speed",               True,  "Velocidad Máxima (km/h)",  "Velocidad punta más alta registrada por el jugador en toda la sesión."),
-            ("Speed Zones  Distance",   True,  "HSR Distancia (km)",       "Distancia recorrida a alta velocidad (≥ 21 km/h, umbral configurado en Titan). Equivalente al HSR (High Speed Running) de otros sistemas GPS. Revisar en Titan si el umbral cambia."),
+            ("Speed Zones Distance o GPS Speed Zone 7–10 Distance", True, "HSR Distancia (km)", "Distancia acumulada desde la zona de velocidad 7 de la configuración de Titan."),
             ("Speed Zones  Count",      True,  "HSR Entradas",             "Número de esfuerzos realizados a ≥ 21 km/h durante la sesión. Indica la frecuencia de acciones de alta intensidad."),
             ("Personal Bands  Distance",False, "Distancia Bandas Personales","Distancia en zonas de velocidad personalizadas por jugador según su perfil físico individual."),
             ("Personal Bands  Count",   False, "Entradas Bandas Personales","Número de entradas en las bandas de velocidad personalizadas del jugador."),
             ("Peak Accel",              True,  "Aceleración Máxima (m/s²)","Pico de aceleración más alto registrado en la sesión. Refleja la explosividad máxima del jugador."),
-            ("Accel Zones  Count",      False, "Entradas Zonas Aceleración","Número total de aceleraciones que superaron los umbrales definidos en Titan."),
+            ("Accel Zones Count o GPS Accel Zones Count por banda", True, "Aceleraciones", "Recuento de aceleraciones a partir de la banda de 4–5 m/s²."),
         ]
 
         # Cabecera

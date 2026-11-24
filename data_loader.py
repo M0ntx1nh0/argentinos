@@ -61,6 +61,38 @@ COL_MAP = {
     "%PC Defensa": "pct_pases_def",
 }
 
+ENGLISH_COL_MAP = {
+    "Matches": "tramo",
+    "MP": "pj",
+    "S/G": "lp",
+    "SOT%": "pct_eficacia",
+    "CR": "centros",
+    "CK": "jugadas_set",
+    "FK": "tiros_libres",
+    "PK": "pl",
+    "GC": "goles_enc",
+    "CS": "pa0",
+    "Saves": "paradas",
+    "BLK": "tap",
+    "TOP": "mejor_posesion",
+    "P#": "num_posesiones",
+    "AttT": "tatc",
+    "PT/G": "tpg",
+    "PT/S": "tpl",
+    "PA": "pases_total",
+    "SP": "pases_ok",
+    "UNSP": "pases_perdidos",
+    "SP%": "pct_pases",
+    "TPS": "cadenas_total",
+    "3-5 PS": "cadenas_3_5",
+    "6+ PS": "cadenas_6mas",
+    "AvPS": "cadenas_prom",
+    "LPS": "cadena_max",
+    **{f"{metric} {zone}": COL_MAP[f"{spanish} {spanish_zone}"]
+       for metric, spanish in (("PA", "IP"), ("SP", "PC"), ("UNSP", "PI"), ("SP%", "%PC"))
+       for zone, spanish_zone in (("Atk", "Atq"), ("Mid", "Mitad"), ("Def", "Defensa"))},
+}
+
 NIVEL_MAP = {
     "2025-2026 Season": "temporada",
     "1º mitad": "parte",
@@ -80,7 +112,10 @@ HALF_LABELS = {"1st Half": "1º mitad", "2nd Half": "2º mitad"}
 
 # Columnas donde "0" es un dato válido (no ausencia de dato)
 ZERO_IS_VALID = {"goles_enc", "goles", "tiros", "tiros_puerta", "centros",
-                 "faltas", "jugadas_set", "paradas", "tap", "pl", "pa0", "cadenas_6mas"}
+                 "faltas", "tiros_libres", "jugadas_set", "paradas", "tap", "pl", "pa0",
+                 "pases_total", "pases_ok", "pases_perdidos", "cadenas_total", "cadenas_3_5", "cadenas_6mas",
+                 *(f"{zone}_{metric}" for zone in ("atq", "mid", "def")
+                   for metric in ("intentados", "completados", "perdidos"))}
 
 
 def _clean_value(val, col_interno: str = ""):
@@ -184,6 +219,8 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
     )
     raw = raw[~header_mask & ~zero_mask].reset_index(drop=True)
 
+    col_map = {**ENGLISH_COL_MAP, **COL_MAP}
+    empty_stats = dict.fromkeys(column for column in col_map.values() if column != "tramo")
     rows = []
     for _, row in raw.iterrows():
         tramo_raw = str(row.iloc[0]).strip()
@@ -198,9 +235,12 @@ def _parse_csv_text(content: str, filename: str = "", created: str | None = None
                      "fecha_carga": pd.to_datetime(created, utc=True, errors="coerce"),
                      "competicion": competition,
                      "nivel": nivel, "tramo_raw": tramo_raw}
-        for col_hudl, col_interno in COL_MAP.items():
-            if col_hudl in row.index and col_hudl != "Partidos":
-                record[col_interno] = _clean_value(row.get(col_hudl), col_interno)
+        record.update(empty_stats)
+        for col_hudl, col_interno in col_map.items():
+            if col_interno != "tramo" and col_hudl in row.index:
+                value = _clean_value(row[col_hudl], col_interno)
+                if value is not None:
+                    record[col_interno] = value
         rows.append(record)
 
     return pd.DataFrame(rows)
